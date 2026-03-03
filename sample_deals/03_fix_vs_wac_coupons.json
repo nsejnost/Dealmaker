@@ -1,0 +1,99 @@
+{
+  "deal_id": "fix-vs-wac",
+  "deal_name": "FIX vs WAC Coupon Classes",
+  "description": "Demonstrates FIX and WAC coupon types. Class A is FIX at 4%, Class B is WAC (resets to pool WAC monthly). CPJ at 15 with 24-month lockout.",
+  "loan": {
+    "dated_date": "2026-03-01",
+    "first_settle": "2026-03-01",
+    "delay": 44,
+    "original_face": 1000000.0,
+    "coupon_net": 0.05,
+    "wac_gross": 0.0525,
+    "wam": 480,
+    "amort_wam": 480,
+    "io_period": 0,
+    "balloon": 120,
+    "seasoning": 0,
+    "lockout_months": 24
+  },
+  "pricing": {
+    "pricing_type": "Price",
+    "pricing_input": 100.0,
+    "settle_date": "2026-03-03",
+    "curve_date": "2026-03-03"
+  },
+  "treasury_curve": {
+    "points": [
+      {"term": 0.0833, "rate": 3.564},
+      {"term": 0.1667, "rate": 3.698},
+      {"term": 0.25, "rate": 3.682},
+      {"term": 0.3333, "rate": 3.673},
+      {"term": 0.5, "rate": 3.633},
+      {"term": 1.0, "rate": 3.564},
+      {"term": 2.0, "rate": 3.513},
+      {"term": 3.0, "rate": 3.521},
+      {"term": 5.0, "rate": 3.649},
+      {"term": 7.0, "rate": 3.846},
+      {"term": 10.0, "rate": 4.07},
+      {"term": 20.0, "rate": 4.665},
+      {"term": 30.0, "rate": 4.716}
+    ]
+  },
+  "loan_pricing_profile": null,
+  "cpj": {
+    "enabled": true,
+    "cpj_speed": 15.0,
+    "lockout_months": 24,
+    "pld_curve": [
+      {"start_month": 1, "end_month": 12, "annual_rate": 0.013},
+      {"start_month": 13, "end_month": 24, "annual_rate": 0.0247},
+      {"start_month": 25, "end_month": 36, "annual_rate": 0.0251},
+      {"start_month": 37, "end_month": 48, "annual_rate": 0.022},
+      {"start_month": 49, "end_month": 60, "annual_rate": 0.0213},
+      {"start_month": 61, "end_month": 72, "annual_rate": 0.0146},
+      {"start_month": 73, "end_month": 84, "annual_rate": 0.0126},
+      {"start_month": 85, "end_month": 96, "annual_rate": 0.008},
+      {"start_month": 97, "end_month": 108, "annual_rate": 0.0057},
+      {"start_month": 109, "end_month": 168, "annual_rate": 0.005},
+      {"start_month": 169, "end_month": 240, "annual_rate": 0.0025},
+      {"start_month": 241, "end_month": 9999, "annual_rate": 0.0}
+    ],
+    "pld_multiplier": 1.0
+  },
+  "structure": {
+    "classes": [
+      {
+        "class_id": "A-FIX",
+        "class_type": "SEQ",
+        "original_balance": 500000.0,
+        "current_balance": 500000.0,
+        "coupon_type": "FIX",
+        "coupon_fix": 0.04,
+        "priority_rank": 1,
+        "pt_group_id": null
+      },
+      {
+        "class_id": "B-WAC",
+        "class_type": "SEQ",
+        "original_balance": 500000.0,
+        "current_balance": 500000.0,
+        "coupon_type": "WAC",
+        "coupon_fix": 0.0,
+        "priority_rank": 2,
+        "pt_group_id": null
+      },
+      {
+        "class_id": "IO",
+        "class_type": "IO",
+        "original_balance": 0.0,
+        "current_balance": 0.0,
+        "coupon_type": "FIX",
+        "coupon_fix": 0.0,
+        "priority_rank": 0,
+        "pt_group_id": null
+      }
+    ],
+    "pt_share": 0.0,
+    "fee_rate": 0.0
+  }
+}
