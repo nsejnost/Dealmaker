@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { Deal, DealResult, BondClass, PLDCurveEntry, CashflowRow, BondCashflowRow } from './types/deal';
-import { dealApi, type UploadResult } from './api/dealApi';
+import { dealApi } from './api/dealApi';
 import { CashflowChart } from './components/CashflowChart';
 import { BondCashflowChart } from './components/BondCashflowChart';
 import { CapitalStack } from './components/CapitalStack';
@@ -77,32 +77,8 @@ export default function App() {
   const [savedDeals, setSavedDeals] = useState<{deal_id: string; deal_name: string}[]>([]);
   const [showPLD, setShowPLD] = useState(false);
 
-  const fileInputRef = React.useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
-
   useEffect(() => {
     dealApi.listDeals().then(setSavedDeals).catch(() => {});
-  }, []);
-
-  const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    setError(null);
-    try {
-      const data: UploadResult = await dealApi.uploadExcel(file);
-      setDeal(d => ({
-        ...d,
-        loan: data.loan,
-        pricing: data.pricing,
-      }));
-      setTab('collateral');
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
   }, []);
 
   const runDeal = useCallback(async () => {
@@ -224,10 +200,6 @@ export default function App() {
             onChange={e => setDeal(d => ({ ...d, deal_name: e.target.value }))}
             style={{ ...inputStyle, width: 200 }}
           />
-          <input ref={fileInputRef} type="file" accept=".xlsm,.xlsx" onChange={handleUpload} style={{ display: 'none' }} />
-          <button onClick={() => fileInputRef.current?.click()} disabled={uploading} style={btnSecondary}>
-            {uploading ? 'Reading...' : 'Import Excel'}
-          </button>
           <button onClick={saveDeal} style={btnSecondary}>Save</button>
           <button onClick={runDeal} disabled={loading} style={btnPrimary}>
             {loading ? 'Running...' : 'Run Deal'}

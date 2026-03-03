@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, HTTPException
 
 from app.models.loan import (
     AnalyticsOutput,
@@ -27,7 +27,6 @@ from app.models.loan import (
     TreasuryCurve,
 )
 from app.engines.deal_runner import run_deal, run_scenario_grid
-from app.engines.excel_reader import parse_workbook
 from app.data.defaults import make_default_deal, DEFAULT_PLD_CURVE, DEFAULT_TSY_CURVE
 
 router = APIRouter(prefix="/api/deals", tags=["deals"])
@@ -76,28 +75,6 @@ def get_pld_curve():
 def get_tsy_curve():
     """Return default treasury curve."""
     return DEFAULT_TSY_CURVE.model_dump()
-
-
-@router.post("/upload-excel")
-async def upload_excel(file: UploadFile):
-    """Upload a Ginnie Project Loan Maker .xlsm workbook and extract parameters."""
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No file provided")
-    if not file.filename.endswith((".xlsm", ".xlsx")):
-        raise HTTPException(
-            status_code=400,
-            detail="File must be an Excel workbook (.xlsm or .xlsx)",
-        )
-    contents = await file.read()
-    try:
-        return parse_workbook(contents)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to parse workbook: {exc}",
-        )
 
 
 @router.post("/create")
