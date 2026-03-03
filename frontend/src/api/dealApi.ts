@@ -14,7 +14,25 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+export interface UploadResult {
+  loan: Deal['loan'];
+  pricing: Deal['pricing'];
+  cashflows: any[];
+  analytics: Record<string, number>;
+}
+
 export const dealApi = {
+  uploadExcel: async (file: File): Promise<UploadResult> => {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(`${BASE}/upload-excel`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`API error ${res.status}: ${text}`);
+    }
+    return res.json();
+  },
+
   getDefaults: () => fetchJson<Deal>(`${BASE}/defaults`),
 
   listDeals: () => fetchJson<{ deal_id: string; deal_name: string }[]>(`${BASE}/list`),
