@@ -30,11 +30,6 @@ app.add_middleware(
 app.include_router(deals.router)
 
 
-@app.get("/")
-def root():
-    return {"app": "GNR Deal Maker", "version": "1.0.0"}
-
-
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -52,3 +47,8 @@ if _static_dir.is_dir():
         if file_path.is_file():
             return FileResponse(file_path)
         return FileResponse(_static_dir / "index.html")
+else:
+
+    @app.get("/")
+    def root():
+        return {"app": "GNR Deal Maker", "version": "1.0.0"}
