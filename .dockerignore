@@ -1,0 +1,10 @@
+node_modules
+__pycache__
+*.pyc
+.git
+.gitignore
+deals_data
+.pytest_cache
+backend/static
+*.xlsm
+docs
