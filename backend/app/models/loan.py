@@ -23,6 +23,7 @@ class BondClassType(str, Enum):
 class PricingType(str, Enum):
     PRICE = "Price"
     YIELD = "Yield"
+    JSPREAD = "JSpread"
 
 
 class LoanInput(BaseModel):
@@ -94,6 +95,8 @@ class BondClass(BaseModel):
     coupon_fix: float = 0.0
     priority_rank: int = 0
     pt_group_id: Optional[str] = None
+    pricing_type: PricingType = PricingType.PRICE
+    pricing_input: float = 100.0
 
 
 class DealStructure(BaseModel):

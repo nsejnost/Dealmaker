@@ -27,6 +27,7 @@ from app.models.loan import (
     CouponType,
     DealStructure,
     LoanInput,
+    TreasuryCurve,
 )
 
 
@@ -179,17 +180,86 @@ def run_waterfall(
     return result
 
 
-def compute_bond_analytics(
+def _bond_pv(
+    bond_cfs: list[BondCashflowRow],
+    settle_serial: int,
+    collateral_cfs: list[CashflowRow],
+    annual_yield: float,
+) -> float:
+    """Compute PV of bond cashflows at given yield (BEY convention)."""
+    y = annual_yield / 100.0
+    pv = 0.0
+    for bcf in bond_cfs:
+        if bcf.month == 0:
+            continue
+        cf_match = next((c for c in collateral_cfs if c.month == bcf.month), None)
+        if cf_match:
+            yf = (cf_match.cf_date_serial - settle_serial) / 365.25
+        else:
+            yf = bcf.month / 12.0
+        total_cf = bcf.interest_paid + bcf.principal_paid
+        if yf > 0:
+            disc = (1.0 + y / 2.0) ** (2.0 * yf)
+            pv += total_cf / disc
+        else:
+            pv += total_cf
+    return pv
+
+
+def _bond_price_from_yield(
     bond_cfs: list[BondCashflowRow],
     settle_serial: int,
     collateral_cfs: list[CashflowRow],
     original_balance: float,
     annual_yield: float,
-) -> dict:
-    """Compute PV, price, WAL for a single bond class."""
-    # WAL using 30/360 day count from CF dates (matching Excel convention)
-    from app.engines.analytics_engine import _yf_30_360
+) -> float:
+    pv = _bond_pv(bond_cfs, settle_serial, collateral_cfs, annual_yield)
+    return (pv / original_balance * 100.0) if original_balance > 0 else 0.0
 
+
+def _bond_yield_from_price(
+    bond_cfs: list[BondCashflowRow],
+    settle_serial: int,
+    collateral_cfs: list[CashflowRow],
+    original_balance: float,
+    target_price: float,
+    tol: float = 1e-10,
+    max_iter: int = 200,
+) -> float:
+    """Newton-Raphson solver: find yield given price for a bond."""
+    target_pv = (target_price / 100.0) * original_balance
+    y = 0.05
+    for _ in range(max_iter):
+        pv = _bond_pv(bond_cfs, settle_serial, collateral_cfs, y * 100.0)
+        err = pv - target_pv
+        if abs(err) < tol:
+            break
+        dy = 0.0001
+        pv_up = _bond_pv(bond_cfs, settle_serial, collateral_cfs, (y + dy) * 100.0)
+        deriv = (pv_up - pv) / dy
+        if abs(deriv) < 1e-15:
+            break
+        y = y - err / deriv
+    return y * 100.0
+
+
+def compute_bond_analytics(
+    bond_cfs: list[BondCashflowRow],
+    settle_serial: int,
+    collateral_cfs: list[CashflowRow],
+    original_balance: float,
+    pricing_type: str,
+    pricing_input: float,
+    curve: Optional["TreasuryCurve"] = None,
+) -> dict:
+    """Compute full analytics for a single bond class.
+
+    Returns dict with: price, yield_pct, wal, j_spread, modified_duration,
+    convexity, risk_dpdy, tsy_rate_at_wal, accrued.
+    """
+    from app.engines.analytics_engine import _yf_30_360, interpolate_tsy_rate
+
+    # WAL
     total_prn = 0.0
     weighted_prn = 0.0
     for bcf in bond_cfs:
@@ -202,33 +272,55 @@ def compute_bond_analytics(
         else:
             yf = bcf.month / 12.0
         weighted_prn += bcf.principal_paid * yf
-
     wal = weighted_prn / total_prn if total_prn > 0 else 0.0
 
-    # PV
-    y = annual_yield / 100.0
-    pv = 0.0
-    for bcf in bond_cfs:
-        if bcf.month == 0:
-            continue
-        cf_match = next((c for c in collateral_cfs if c.month == bcf.month), None)
-        if cf_match:
-            cf_serial = cf_match.cf_date_serial
-            yf = (cf_serial - settle_serial) / 365.25
-        else:
-            yf = bcf.month / 12.0
+    # Pricing
+    if pricing_type == "Price":
+        price = pricing_input
+        yield_pct = _bond_yield_from_price(
+            bond_cfs, settle_serial, collateral_cfs, original_balance, price
+        )
+    elif pricing_type == "JSpread" and curve is not None:
+        tsy_at_wal = interpolate_tsy_rate(wal, curve)
+        yield_pct = tsy_at_wal + pricing_input / 100.0
+        price = _bond_price_from_yield(
+            bond_cfs, settle_serial, collateral_cfs, original_balance, yield_pct
+        )
+    else:  # Yield
+        yield_pct = pricing_input
+        price = _bond_price_from_yield(
+            bond_cfs, settle_serial, collateral_cfs, original_balance, yield_pct
+        )
 
-        total_cf = bcf.interest_paid + bcf.principal_paid
-        if yf > 0:
-            disc = (1.0 + y / 2.0) ** (2.0 * yf)
-            pv += total_cf / disc
-        else:
-            pv += total_cf
+    # Duration & Convexity (1bp bump)
+    dy = 0.01  # 1bp in percent
+    p0 = price
+    p_up = _bond_price_from_yield(
+        bond_cfs, settle_serial, collateral_cfs, original_balance, yield_pct + dy
+    )
+    p_dn = _bond_price_from_yield(
+        bond_cfs, settle_serial, collateral_cfs, original_balance, yield_pct - dy
+    )
+    dy_dec = dy / 100.0  # decimal
+    mod_dur = -(p_up - p_dn) / (2.0 * dy_dec * p0) if abs(p0) > 1e-15 else 0.0
+    convexity = (p_up + p_dn - 2.0 * p0) / (dy_dec ** 2 * p0) if abs(p0) > 1e-15 else 0.0
+    risk_dpdy = -(p_up - p_dn) / (2.0 * dy_dec)
 
-    price = (pv / original_balance * 100.0) if original_balance > 0 else 0.0
+    # J-spread & tsy rate
+    tsy_at_wal = 0.0
+    j_spread = 0.0
+    if curve is not None:
+        tsy_at_wal = interpolate_tsy_rate(wal, curve)
+        j_spread = (yield_pct - tsy_at_wal) * 100.0  # bps
 
     return {
-        "wal": wal,
-        "pv": pv,
         "price": price,
+        "yield_pct": yield_pct,
+        "wal": wal,
+        "j_spread": j_spread,
+        "modified_duration": mod_dur,
+        "convexity": convexity,
+        "risk_dpdy": risk_dpdy,
+        "tsy_rate_at_wal": tsy_at_wal,
+        "accrued": 0.0,
     }

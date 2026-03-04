@@ -122,11 +122,20 @@ def run_deal(deal: Deal) -> DealResult:
                     settle_serial,
                     bond_collat_cfs,
                     cls.original_balance if cls.original_balance > 0 else 1.0,
-                    contractual_analytics.yield_pct,
+                    cls.pricing_type.value,
+                    cls.pricing_input,
+                    curve,
                 )
                 bond_analytics[cls.class_id] = AnalyticsOutput(
                     price=ba["price"],
+                    yield_pct=ba["yield_pct"],
                     wal=ba["wal"],
+                    j_spread=ba["j_spread"],
+                    modified_duration=ba["modified_duration"],
+                    convexity=ba["convexity"],
+                    risk_dpdy=ba["risk_dpdy"],
+                    tsy_rate_at_wal=ba["tsy_rate_at_wal"],
+                    accrued=ba["accrued"],
                 )
 
             if cls.class_type.value == "IO" and cls.class_id in bond_cashflows:

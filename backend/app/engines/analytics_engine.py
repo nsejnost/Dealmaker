@@ -278,6 +278,13 @@ def compute_full_analytics(
         yield_pct = compute_yield_from_price(
             cashflows, price, settle_serial, original_face
         )
+    elif pricing_type == "JSpread":
+        # pricing_input is J-Spread in bps; solve for yield = tsy_rate_at_wal + spread
+        tsy_at_wal = interpolate_tsy_rate(wal, curve)
+        yield_pct = tsy_at_wal + pricing_input / 100.0
+        price = compute_price_from_yield(
+            cashflows, yield_pct, settle_serial, original_face
+        )
     else:
         yield_pct = pricing_input
         price = compute_price_from_yield(

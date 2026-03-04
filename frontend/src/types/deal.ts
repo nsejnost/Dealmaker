@@ -21,7 +21,7 @@ export interface LoanPricingProfile {
 }
 
 export interface PricingInput {
-  pricing_type: 'Price' | 'Yield';
+  pricing_type: 'Price' | 'Yield' | 'JSpread';
   pricing_input: number;
   settle_date: string;
   curve_date: string;
@@ -59,6 +59,8 @@ export interface BondClass {
   coupon_fix: number;
   priority_rank: number;
   pt_group_id: string | null;
+  pricing_type: 'Price' | 'Yield' | 'JSpread';
+  pricing_input: number;
 }
 
 export interface DealStructure {
