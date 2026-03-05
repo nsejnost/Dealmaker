@@ -26,6 +26,12 @@ class PricingType(str, Enum):
     JSPREAD = "JSpread"
 
 
+class PrepaymentType(str, Enum):
+    NONE = "None"
+    CPJ = "CPJ"
+    CPR = "CPR"
+
+
 class LoanInput(BaseModel):
     """Mirrors Excel workbook input cells exactly."""
 
@@ -41,6 +47,10 @@ class LoanInput(BaseModel):
     balloon: int = Field(default=120, description="Balloon month (Excel F18)")
     seasoning: int = Field(default=0, description="Seasoning months (Excel F19)")
     lockout_months: int = Field(default=0, description="Lockout months for CPJ")
+    prepayment_penalty: list[float] = Field(
+        default_factory=list,
+        description="Declining annual penalty schedule, e.g. [10,9,8,7,6,5,4,3,2,1]",
+    )
 
 
 class LoanPricingProfile(BaseModel):
@@ -86,6 +96,16 @@ class CPJInput(BaseModel):
     pld_multiplier: float = Field(default=1.0, description="PLD curve multiplier")
 
 
+class PrepaymentAssumption(BaseModel):
+    """Prepayment assumption for bond waterfall cashflow generation."""
+
+    prepay_type: PrepaymentType = PrepaymentType.NONE
+    speed: float = Field(default=15.0, description="CPJ speed or CPR in %")
+    lockout_months: int = Field(default=0, description="Lockout months (CPJ only)")
+    pld_curve: list[PLDCurveEntry] = Field(default_factory=list)
+    pld_multiplier: float = Field(default=1.0, description="PLD curve multiplier (CPJ only)")
+
+
 class BondClass(BaseModel):
     class_id: str
     class_type: BondClassType
@@ -103,6 +123,7 @@ class DealStructure(BaseModel):
     classes: list[BondClass] = []
     pt_share: float = Field(default=0.0, ge=0.0, le=1.0)
     fee_rate: float = Field(default=0.0, description="Annual fee rate on collateral balance")
+    prepay: PrepaymentAssumption = PrepaymentAssumption()
 
 
 class CashflowRow(BaseModel):
@@ -147,6 +168,7 @@ class BondCashflowRow(BaseModel):
     principal_paid: float = 0.0
     end_bal: float = 0.0
     coupon_rate: float = 0.0
+    penalty_income: float = 0.0
 
 
 class DealResult(BaseModel):
