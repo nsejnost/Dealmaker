@@ -62,10 +62,10 @@ function makeDefaultLoan(): LoanInput {
     wac_gross: 0.0525,
     wam: 480,
     amort_wam: 480,
-    io_period: 0,
-    balloon: 120,
+    io_period: null,
+    balloon: null,
     seasoning: 0,
-    lockout_months: 0,
+    lockout_months: null,
     prepayment_penalty: [],
     pricing_type: 'Price',
     pricing_input: 100,
@@ -159,7 +159,7 @@ export default function App() {
     const dl = makeDefaultLoan();
     const row = [
       dl.dated_date, dl.first_settle, dl.delay, dl.original_face, dl.coupon_net, dl.wac_gross,
-      dl.wam, dl.amort_wam, dl.io_period, dl.balloon, dl.seasoning, dl.lockout_months,
+      dl.wam, dl.amort_wam, dl.io_period ?? '', dl.balloon ?? '', dl.seasoning, dl.lockout_months ?? '',
       '', dl.pricing_type, dl.pricing_input, dl.settle_date ?? '',
       '', '', '', '',
     ];
@@ -182,7 +182,7 @@ export default function App() {
         const lines = text.split(/\r?\n/).filter(l => l.trim());
         if (lines.length < 2) throw new Error('CSV must have a header row and at least one data row.');
         const headers = lines[0].split(',').map(h => h.trim());
-        const required = ['dated_date','first_settle','original_face','coupon_net','wac_gross','wam','balloon'];
+        const required = ['dated_date','first_settle','original_face','coupon_net','wac_gross','wam'];
         const missing = required.filter(r => !headers.includes(r));
         if (missing.length > 0) throw new Error(`Missing required columns: ${missing.join(', ')}`);
         const colIdx = Object.fromEntries(headers.map((h, i) => [h, i]));
@@ -208,10 +208,10 @@ export default function App() {
             wac_gross: flt('wac_gross', dl.wac_gross),
             wam: int('wam', dl.wam),
             amort_wam: int('amort_wam', dl.amort_wam),
-            io_period: int('io_period', dl.io_period),
-            balloon: int('balloon', dl.balloon),
+            io_period: nullInt('io_period'),
+            balloon: nullInt('balloon'),
             seasoning: int('seasoning', dl.seasoning),
-            lockout_months: int('lockout_months', dl.lockout_months),
+            lockout_months: nullInt('lockout_months'),
             prepayment_penalty: parsePenaltyString(get(vals, 'prepayment_penalty')),
             pricing_type: (['Price','Yield','JSpread'].includes(pxType) ? pxType : 'Price') as LoanInput['pricing_type'],
             pricing_input: flt('pricing_input', dl.pricing_input),
@@ -581,10 +581,10 @@ export default function App() {
                         <td style={tdStyle}><input type="number" step="0.0025" value={loan.wac_gross} onChange={e => updateLoan(i, 'wac_gross', parseFloat(e.target.value))} style={{...inputStyle, width: 65}} /></td>
                         <td style={tdStyle}><input type="number" value={loan.wam} onChange={e => updateLoan(i, 'wam', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
                         <td style={tdStyle}><input type="number" value={loan.amort_wam} onChange={e => updateLoan(i, 'amort_wam', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
-                        <td style={tdStyle}><input type="number" value={loan.io_period} onChange={e => updateLoan(i, 'io_period', parseInt(e.target.value))} style={{...inputStyle, width: 40}} /></td>
-                        <td style={tdStyle}><input type="number" value={loan.balloon} onChange={e => updateLoan(i, 'balloon', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.io_period ?? ''} onChange={e => updateLoan(i, 'io_period', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 40}} placeholder="None" /></td>
+                        <td style={tdStyle}><input type="number" value={loan.balloon ?? ''} onChange={e => updateLoan(i, 'balloon', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 45}} placeholder="None" /></td>
                         <td style={tdStyle}><input type="number" value={loan.seasoning} onChange={e => updateLoan(i, 'seasoning', parseInt(e.target.value))} style={{...inputStyle, width: 40}} /></td>
-                        <td style={tdStyle}><input type="number" value={loan.lockout_months} onChange={e => updateLoan(i, 'lockout_months', parseInt(e.target.value))} style={{...inputStyle, width: 40}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.lockout_months ?? ''} onChange={e => updateLoan(i, 'lockout_months', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 40}} placeholder="None" /></td>
                         {/* Pricing */}
                         <td style={{...tdStyle, borderLeft: '2px solid #475569'}}>
                           <select value={loan.pricing_type} onChange={e => updateLoan(i, 'pricing_type', e.target.value)} style={{...inputStyle, width: 70}}>

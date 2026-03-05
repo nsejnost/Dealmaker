@@ -145,7 +145,7 @@ def run_deal(deal: Deal) -> DealResult:
             bc_cfs = apply_prepay_overlay(cfs, loan, prepay)
         elif deal.cpj.enabled:
             cpj = deal.cpj.model_copy()
-            if cpj.lockout_months == 0 and loan.lockout_months > 0:
+            if cpj.lockout_months == 0 and (loan.lockout_months or 0) > 0:
                 cpj.lockout_months = loan.lockout_months
             bc_cfs = apply_cpj_overlay(cfs, loan, cpj)
         else:
