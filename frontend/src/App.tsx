@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import type { Deal, DealResult, BondClass, PLDCurveEntry, PrepaymentType, CashflowRow, BondCashflowRow, AnalyticsOutput } from './types/deal';
+import type { Deal, DealResult, BondClass, PLDCurveEntry, PrepaymentType, LoanInput, CashflowRow, BondCashflowRow, AnalyticsOutput } from './types/deal';
 import { dealApi, type UploadResult } from './api/dealApi';
 import { CashflowChart } from './components/CashflowChart';
 import { BondCashflowChart } from './components/BondCashflowChart';
@@ -52,25 +52,38 @@ const defaultPLD: PLDCurveEntry[] = [
   { start_month: 241, end_month: 9999, annual_rate: 0.0000 },
 ];
 
+function makeDefaultLoan(): LoanInput {
+  return {
+    dated_date: '2026-03-01',
+    first_settle: '2026-03-01',
+    delay: 44,
+    original_face: 1000000,
+    coupon_net: 0.05,
+    wac_gross: 0.0525,
+    wam: 480,
+    amort_wam: 480,
+    io_period: 0,
+    balloon: 120,
+    seasoning: 0,
+    lockout_months: 0,
+    prepayment_penalty: [],
+    pricing_type: 'Price',
+    pricing_input: 100,
+    settle_date: '2026-03-03',
+    lp_amort_wam: null,
+    lp_balloon: null,
+    lp_io_period: null,
+    lp_wam: null,
+  };
+}
+
 function makeDefaultDeal(): Deal {
+  const loan = makeDefaultLoan();
   return {
     deal_id: '',
     deal_name: 'New Deal',
-    loan: {
-      dated_date: '2026-03-01',
-      first_settle: '2026-03-01',
-      delay: 44,
-      original_face: 1000000,
-      coupon_net: 0.05,
-      wac_gross: 0.0525,
-      wam: 480,
-      amort_wam: 480,
-      io_period: 0,
-      balloon: 120,
-      seasoning: 0,
-      lockout_months: 0,
-      prepayment_penalty: [],
-    },
+    loans: [loan],
+    loan: loan,
     pricing: {
       pricing_type: 'Price',
       pricing_input: 100,
@@ -142,7 +155,10 @@ export default function App() {
     setError(null);
     try {
       const data: UploadResult = await dealApi.uploadExcel(file);
-      setDeal(d => ({ ...d, loan: { ...d.loan, ...data.loan }, pricing: { ...d.pricing, ...data.pricing } }));
+      setDeal(d => {
+        const updatedLoan = { ...d.loans[0], ...data.loan };
+        return { ...d, loans: [updatedLoan, ...d.loans.slice(1)], loan: updatedLoan, pricing: { ...d.pricing, ...data.pricing } };
+      });
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -155,8 +171,8 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      // Sync structure.prepay to cpj for backward compat
-      const dealToRun = { ...deal };
+      // Sync backward compat fields
+      const dealToRun = { ...deal, loan: deal.loans[0] || deal.loan };
       if (deal.structure.prepay.prepay_type === 'CPJ') {
         dealToRun.cpj = {
           enabled: true,
@@ -190,7 +206,6 @@ export default function App() {
     try {
       const d = await dealApi.getDeal(id);
       // Ensure new fields exist for backward compat
-      if (!d.loan.prepayment_penalty) d.loan.prepayment_penalty = [];
       if (!d.structure.prepay) {
         d.structure.prepay = {
           prepay_type: d.cpj?.enabled ? 'CPJ' : 'None',
@@ -199,6 +214,28 @@ export default function App() {
           pld_curve: d.cpj?.pld_curve ?? defaultPLD,
           pld_multiplier: d.cpj?.pld_multiplier ?? 1.0,
         };
+      }
+      // Migrate single loan to loans array
+      if (!d.loans || d.loans.length === 0) {
+        const baseLoan = d.loan || makeDefaultLoan();
+        if (!baseLoan.prepayment_penalty) baseLoan.prepayment_penalty = [];
+        if (!baseLoan.pricing_type) baseLoan.pricing_type = d.pricing?.pricing_type ?? 'Price';
+        if (baseLoan.pricing_input === undefined) baseLoan.pricing_input = d.pricing?.pricing_input ?? 100;
+        if (!baseLoan.settle_date) baseLoan.settle_date = d.pricing?.settle_date ?? '2026-03-03';
+        if (baseLoan.lp_amort_wam === undefined) baseLoan.lp_amort_wam = d.loan_pricing_profile?.amort_wam_override ?? null;
+        if (baseLoan.lp_balloon === undefined) baseLoan.lp_balloon = d.loan_pricing_profile?.balloon_override ?? null;
+        if (baseLoan.lp_io_period === undefined) baseLoan.lp_io_period = d.loan_pricing_profile?.io_period_override ?? null;
+        if (baseLoan.lp_wam === undefined) baseLoan.lp_wam = d.loan_pricing_profile?.wam_override ?? null;
+        d.loans = [baseLoan];
+        d.loan = baseLoan;
+      } else {
+        // Ensure per-loan fields exist
+        d.loans = d.loans.map((l: any) => ({
+          ...makeDefaultLoan(),
+          ...l,
+          prepayment_penalty: l.prepayment_penalty || [],
+        }));
+        d.loan = d.loans[0];
       }
       setDeal(d);
       setResult(d.result || null);
@@ -218,8 +255,25 @@ export default function App() {
     URL.revokeObjectURL(url);
   }, []);
 
-  const updateLoan = (field: string, value: any) => {
-    setDeal(d => ({ ...d, loan: { ...d.loan, [field]: value } }));
+  const updateLoan = (idx: number, field: string, value: any) => {
+    setDeal(d => {
+      const loans = [...d.loans];
+      loans[idx] = { ...loans[idx], [field]: value };
+      return { ...d, loans, loan: loans[0] };
+    });
+  };
+  const addLoan = () => {
+    setDeal(d => {
+      const newLoan = makeDefaultLoan();
+      return { ...d, loans: [...d.loans, newLoan] };
+    });
+  };
+  const removeLoan = (idx: number) => {
+    setDeal(d => {
+      if (d.loans.length <= 1) return d;
+      const loans = d.loans.filter((_, i) => i !== idx);
+      return { ...d, loans, loan: loans[0] };
+    });
   };
   const updatePricing = (field: string, value: any) => {
     setDeal(d => ({ ...d, pricing: { ...d.pricing, [field]: value } }));
@@ -296,13 +350,14 @@ export default function App() {
   };
 
   // Deal Arb computation
+  const totalFace = deal.loans.reduce((s, l) => s + l.original_face, 0);
   const dealArb = React.useMemo(() => {
     if (!result || !result.collateral_analytics) return null;
     const collat = result.collateral_analytics;
     const classes = deal.structure.classes.filter(c => c.class_type !== 'IO');
     if (classes.length === 0) return null;
 
-    const collatProceeds = (collat.price / 100) * deal.loan.original_face;
+    const collatProceeds = (collat.price / 100) * totalFace;
     let bondProceeds = 0;
     let weightedYield = 0;
     let totalBondBalance = 0;
@@ -316,12 +371,12 @@ export default function App() {
     }
 
     const arbDollar = bondProceeds - collatProceeds;
-    const arbPer100 = totalBondBalance > 0 ? (arbDollar / deal.loan.original_face) * 100 : 0;
+    const arbPer100 = totalBondBalance > 0 ? (arbDollar / totalFace) * 100 : 0;
     const avgBondYield = totalBondBalance > 0 ? weightedYield / totalBondBalance : 0;
     const yieldSpread = collat.yield_pct - avgBondYield;
 
     return { arbDollar, arbPer100, collatYield: collat.yield_pct, avgBondYield, yieldSpread, bondProceeds, collatProceeds };
-  }, [result, deal.structure.classes, deal.loan.original_face]);
+  }, [result, deal.structure.classes, totalFace]);
 
   return (
     <div style={{ fontFamily: 'system-ui, -apple-system, sans-serif', background: '#0f172a', color: '#e2e8f0', minHeight: '100vh' }}>
@@ -387,139 +442,178 @@ export default function App() {
 
           {/* ── COLLATERAL SECTION ── */}
           <Section title="Collateral">
+            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+              <button onClick={addLoan} style={btnSecondary}>+ Add Loan</button>
+              <span style={{ fontSize: 11, color: '#64748b', lineHeight: '28px' }}>
+                {deal.loans.length} loan{deal.loans.length > 1 ? 's' : ''} &bull; Total Face: {fmt(totalFace, 0)}
+              </span>
+            </div>
             <div style={{ overflowX: 'auto' }}>
               <table style={tableStyle}>
                 <thead>
                   <tr>
-                    <th style={thStyle}>Dated Date</th>
+                    <th style={thStyle}></th>
+                    <th style={thStyle} colSpan={12}>Loan Details</th>
+                    <th style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={3}>Pricing</th>
+                    <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Penalty</th>
+                    <th style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={4}>LP Override</th>
+                    {result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (
+                      <th style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={8}>Analytics</th>
+                    )}
+                  </tr>
+                  <tr>
+                    <th style={thStyle}></th>
+                    <th style={thStyle}>Dated</th>
                     <th style={thStyle}>1st Settle</th>
                     <th style={thStyle}>Delay</th>
                     <th style={thStyle}>Orig Face</th>
                     <th style={thStyle}>Net Cpn</th>
-                    <th style={thStyle}>Gross WAC</th>
+                    <th style={thStyle}>WAC</th>
                     <th style={thStyle}>WAM</th>
-                    <th style={thStyle}>Amort WAM</th>
-                    <th style={thStyle}>IO (mo)</th>
+                    <th style={thStyle}>Amort</th>
+                    <th style={thStyle}>IO</th>
                     <th style={thStyle}>Balloon</th>
-                    <th style={thStyle}>Seasoning</th>
-                    <th style={thStyle}>Lockout</th>
-                    {result && result.collateral_analytics && <>
+                    <th style={thStyle}>Season</th>
+                    <th style={thStyle}>Lock</th>
+                    <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Type</th>
+                    <th style={thStyle}>Input</th>
+                    <th style={thStyle}>Settle</th>
+                    <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Schedule</th>
+                    <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Amort</th>
+                    <th style={thStyle}>Blln</th>
+                    <th style={thStyle}>IO</th>
+                    <th style={thStyle}>WAM</th>
+                    {result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && <>
                       <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Price</th>
                       <th style={thStyle}>Yield</th>
                       <th style={thStyle}>J-Sprd</th>
                       <th style={thStyle}>WAL</th>
-                      <th style={thStyle}>Mod Dur</th>
-                      <th style={thStyle}>Convx</th>
+                      <th style={thStyle}>Dur</th>
+                      <th style={thStyle}>Cvx</th>
                       <th style={thStyle}>Risk</th>
-                      <th style={thStyle}>Tsy@WAL</th>
+                      <th style={thStyle}>Tsy</th>
                     </>}
                   </tr>
                 </thead>
                 <tbody>
-                  <tr>
-                    <td style={tdStyle}><input type="date" value={deal.loan.dated_date} onChange={e => updateLoan('dated_date', e.target.value)} style={{...inputStyle, width: 120}} /></td>
-                    <td style={tdStyle}><input type="date" value={deal.loan.first_settle} onChange={e => updateLoan('first_settle', e.target.value)} style={{...inputStyle, width: 120}} /></td>
-                    <td style={tdStyle}><input type="number" value={deal.loan.delay} onChange={e => updateLoan('delay', parseInt(e.target.value))} style={{...inputStyle, width: 50}} /></td>
-                    <td style={tdStyle}><input type="number" value={deal.loan.original_face} onChange={e => updateLoan('original_face', parseFloat(e.target.value))} style={{...inputStyle, width: 100}} /></td>
-                    <td style={tdStyle}><input type="number" step="0.0025" value={deal.loan.coupon_net} onChange={e => updateLoan('coupon_net', parseFloat(e.target.value))} style={{...inputStyle, width: 70}} /></td>
-                    <td style={tdStyle}><input type="number" step="0.0025" value={deal.loan.wac_gross} onChange={e => updateLoan('wac_gross', parseFloat(e.target.value))} style={{...inputStyle, width: 70}} /></td>
-                    <td style={tdStyle}><input type="number" value={deal.loan.wam} onChange={e => updateLoan('wam', parseInt(e.target.value))} style={{...inputStyle, width: 50}} /></td>
-                    <td style={tdStyle}><input type="number" value={deal.loan.amort_wam} onChange={e => updateLoan('amort_wam', parseInt(e.target.value))} style={{...inputStyle, width: 50}} /></td>
-                    <td style={tdStyle}><input type="number" value={deal.loan.io_period} onChange={e => updateLoan('io_period', parseInt(e.target.value))} style={{...inputStyle, width: 50}} /></td>
-                    <td style={tdStyle}><input type="number" value={deal.loan.balloon} onChange={e => updateLoan('balloon', parseInt(e.target.value))} style={{...inputStyle, width: 50}} /></td>
-                    <td style={tdStyle}><input type="number" value={deal.loan.seasoning} onChange={e => updateLoan('seasoning', parseInt(e.target.value))} style={{...inputStyle, width: 50}} /></td>
-                    <td style={tdStyle}><input type="number" value={deal.loan.lockout_months} onChange={e => updateLoan('lockout_months', parseInt(e.target.value))} style={{...inputStyle, width: 50}} /></td>
-                    {result && result.collateral_analytics && (() => {
-                      const a = result.collateral_analytics!;
-                      return <>
-                        <td style={{...tdStyleR, borderLeft: '2px solid #475569'}}>{a.price.toFixed(4)}</td>
-                        <td style={tdStyleR}>{a.yield_pct.toFixed(4)}</td>
-                        <td style={tdStyleR}>{a.j_spread.toFixed(1)}</td>
-                        <td style={tdStyleR}>{a.wal.toFixed(4)}</td>
-                        <td style={tdStyleR}>{a.modified_duration.toFixed(4)}</td>
-                        <td style={tdStyleR}>{a.convexity.toFixed(4)}</td>
-                        <td style={tdStyleR}>{a.risk_dpdy.toFixed(4)}</td>
-                        <td style={tdStyleR}>{a.tsy_rate_at_wal.toFixed(4)}</td>
-                      </>;
-                    })()}
-                  </tr>
+                  {deal.loans.map((loan, i) => {
+                    const a = result?.per_loan_analytics?.[i];
+                    return (
+                      <tr key={i}>
+                        <td style={tdStyle}>
+                          {deal.loans.length > 1 && <button onClick={() => removeLoan(i)} style={{...btnMini, color: '#f87171'}}>x</button>}
+                        </td>
+                        <td style={tdStyle}><input type="date" value={loan.dated_date} onChange={e => updateLoan(i, 'dated_date', e.target.value)} style={{...inputStyle, width: 120}} /></td>
+                        <td style={tdStyle}><input type="date" value={loan.first_settle} onChange={e => updateLoan(i, 'first_settle', e.target.value)} style={{...inputStyle, width: 120}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.delay} onChange={e => updateLoan(i, 'delay', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.original_face} onChange={e => updateLoan(i, 'original_face', parseFloat(e.target.value))} style={{...inputStyle, width: 90}} /></td>
+                        <td style={tdStyle}><input type="number" step="0.0025" value={loan.coupon_net} onChange={e => updateLoan(i, 'coupon_net', parseFloat(e.target.value))} style={{...inputStyle, width: 65}} /></td>
+                        <td style={tdStyle}><input type="number" step="0.0025" value={loan.wac_gross} onChange={e => updateLoan(i, 'wac_gross', parseFloat(e.target.value))} style={{...inputStyle, width: 65}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.wam} onChange={e => updateLoan(i, 'wam', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.amort_wam} onChange={e => updateLoan(i, 'amort_wam', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.io_period} onChange={e => updateLoan(i, 'io_period', parseInt(e.target.value))} style={{...inputStyle, width: 40}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.balloon} onChange={e => updateLoan(i, 'balloon', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.seasoning} onChange={e => updateLoan(i, 'seasoning', parseInt(e.target.value))} style={{...inputStyle, width: 40}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.lockout_months} onChange={e => updateLoan(i, 'lockout_months', parseInt(e.target.value))} style={{...inputStyle, width: 40}} /></td>
+                        {/* Pricing */}
+                        <td style={{...tdStyle, borderLeft: '2px solid #475569'}}>
+                          <select value={loan.pricing_type} onChange={e => updateLoan(i, 'pricing_type', e.target.value)} style={{...inputStyle, width: 70}}>
+                            <option value="Price">Price</option>
+                            <option value="Yield">Yield</option>
+                            <option value="JSpread">J-Sprd</option>
+                          </select>
+                        </td>
+                        <td style={tdStyle}><input type="number" step="0.01" value={loan.pricing_input} onChange={e => updateLoan(i, 'pricing_input', parseFloat(e.target.value))} style={{...inputStyle, width: 65}} /></td>
+                        <td style={tdStyle}><input type="date" value={loan.settle_date || ''} onChange={e => updateLoan(i, 'settle_date', e.target.value)} style={{...inputStyle, width: 120}} /></td>
+                        {/* Penalty */}
+                        <td style={{...tdStyle, borderLeft: '2px solid #475569'}}>
+                          <input type="text" placeholder="10-9-8..." value={penaltyToString(loan.prepayment_penalty)} onChange={e => updateLoan(i, 'prepayment_penalty', parsePenaltyString(e.target.value))} style={{...inputStyle, width: 100}} title={loan.prepayment_penalty.length > 0 ? `${loan.prepayment_penalty.length}-yr schedule` : 'No penalty'} />
+                        </td>
+                        {/* LP Override */}
+                        <td style={{...tdStyle, borderLeft: '2px solid #475569'}}><input type="number" value={loan.lp_amort_wam ?? ''} onChange={e => updateLoan(i, 'lp_amort_wam', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 45}} placeholder="-" /></td>
+                        <td style={tdStyle}><input type="number" value={loan.lp_balloon ?? ''} onChange={e => updateLoan(i, 'lp_balloon', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 45}} placeholder="-" /></td>
+                        <td style={tdStyle}><input type="number" value={loan.lp_io_period ?? ''} onChange={e => updateLoan(i, 'lp_io_period', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 40}} placeholder="-" /></td>
+                        <td style={tdStyle}><input type="number" value={loan.lp_wam ?? ''} onChange={e => updateLoan(i, 'lp_wam', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 45}} placeholder="-" /></td>
+                        {/* Analytics */}
+                        {result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (() => {
+                          if (!a) return <td colSpan={8} style={tdStyle}>-</td>;
+                          return <>
+                            <td style={{...tdStyleR, borderLeft: '2px solid #475569'}}>{a.price.toFixed(4)}</td>
+                            <td style={tdStyleR}>{a.yield_pct.toFixed(4)}</td>
+                            <td style={tdStyleR}>{a.j_spread.toFixed(1)}</td>
+                            <td style={tdStyleR}>{a.wal.toFixed(4)}</td>
+                            <td style={tdStyleR}>{a.modified_duration.toFixed(4)}</td>
+                            <td style={tdStyleR}>{a.convexity.toFixed(4)}</td>
+                            <td style={tdStyleR}>{a.risk_dpdy.toFixed(4)}</td>
+                            <td style={tdStyleR}>{a.tsy_rate_at_wal.toFixed(4)}</td>
+                          </>;
+                        })()}
+                      </tr>
+                    );
+                  })}
+                  {/* Aggregated total row */}
+                  {deal.loans.length > 1 && (
+                    <tr style={{ background: '#0f172a', fontWeight: 600 }}>
+                      <td style={tdStyle}></td>
+                      <td colSpan={3} style={{...tdStyle, color: '#38bdf8', fontSize: 11}}>TOTAL / WEIGHTED</td>
+                      <td style={tdStyleR}>{fmt(totalFace, 0)}</td>
+                      <td style={tdStyleR}>{totalFace > 0 ? (deal.loans.reduce((s, l) => s + l.original_face * l.coupon_net, 0) / totalFace).toFixed(4) : '-'}</td>
+                      <td style={tdStyleR}>{totalFace > 0 ? (deal.loans.reduce((s, l) => s + l.original_face * l.wac_gross, 0) / totalFace).toFixed(4) : '-'}</td>
+                      <td colSpan={6} style={tdStyle}></td>
+                      <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={3}></td>
+                      <td style={{...tdStyle, borderLeft: '2px solid #475569'}}></td>
+                      <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={4}></td>
+                      {result && result.collateral_analytics && (() => {
+                        const a = result.collateral_analytics!;
+                        return <>
+                          <td style={{...tdStyleR, borderLeft: '2px solid #475569', color: '#38bdf8'}}>{a.price.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.yield_pct.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.j_spread.toFixed(1)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.wal.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.modified_duration.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.convexity.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.risk_dpdy.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.tsy_rate_at_wal.toFixed(4)}</td>
+                        </>;
+                      })()}
+                      {result && (!result.collateral_analytics) && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (
+                        <td colSpan={8} style={{...tdStyle, borderLeft: '2px solid #475569'}}>-</td>
+                      )}
+                    </tr>
+                  )}
+                  {/* Single-loan aggregated analytics shown even for 1 loan */}
+                  {deal.loans.length === 1 && result && result.collateral_analytics && !result.per_loan_analytics?.length && (
+                    <tr style={{ background: '#0f172a' }}>
+                      <td colSpan={13} style={tdStyle}></td>
+                      <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={3}></td>
+                      <td style={{...tdStyle, borderLeft: '2px solid #475569'}}></td>
+                      <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={4}></td>
+                      {(() => {
+                        const a = result.collateral_analytics!;
+                        return <>
+                          <td style={{...tdStyleR, borderLeft: '2px solid #475569'}}>{a.price.toFixed(4)}</td>
+                          <td style={tdStyleR}>{a.yield_pct.toFixed(4)}</td>
+                          <td style={tdStyleR}>{a.j_spread.toFixed(1)}</td>
+                          <td style={tdStyleR}>{a.wal.toFixed(4)}</td>
+                          <td style={tdStyleR}>{a.modified_duration.toFixed(4)}</td>
+                          <td style={tdStyleR}>{a.convexity.toFixed(4)}</td>
+                          <td style={tdStyleR}>{a.risk_dpdy.toFixed(4)}</td>
+                          <td style={tdStyleR}>{a.tsy_rate_at_wal.toFixed(4)}</td>
+                        </>;
+                      })()}
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
-
             <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
-              Fee = {((deal.loan.wac_gross - deal.loan.coupon_net) * 10000).toFixed(0)} bp
-              &nbsp;|&nbsp; Term = {Math.floor(deal.loan.wam / 12)}yr {deal.loan.wam % 12}mo
-            </div>
-
-            {/* Collateral Pricing Assumptions */}
-            <div style={{ marginTop: 10, padding: '8px 10px', background: '#0f172a', borderRadius: 6, border: '1px solid #334155' }}>
-              <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6, fontStyle: 'italic' }}>
-                Collateral Pricing Assumptions (used for collateral analytics only)
-              </div>
-              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <label style={labelStyle}>Pricing Type</label>
-                <select value={deal.pricing.pricing_type} onChange={e => updatePricing('pricing_type', e.target.value)} style={{...inputStyle, width: 90}}>
-                  <option value="Price">Price</option>
-                  <option value="Yield">Yield</option>
-                  <option value="JSpread">J-Spread</option>
-                </select>
-                <label style={labelStyle}>Input</label>
-                <input type="number" step="0.01" value={deal.pricing.pricing_input} onChange={e => updatePricing('pricing_input', parseFloat(e.target.value))} style={{...inputStyle, width: 80}} />
-                <label style={labelStyle}>Settle</label>
-                <input type="date" value={deal.pricing.settle_date} onChange={e => updatePricing('settle_date', e.target.value)} style={{...inputStyle, width: 120}} />
-              </div>
-            </div>
-
-            {/* Prepayment Penalty */}
-            <div style={{ marginTop: 8, padding: '8px 10px', background: '#0f172a', borderRadius: 6, border: '1px solid #334155' }}>
-              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <label style={labelStyle}>Prepayment Penalty</label>
-                <input
-                  type="text"
-                  placeholder="e.g. 10-9-8-7-6-5-4-3-2-1"
-                  value={penaltyToString(deal.loan.prepayment_penalty)}
-                  onChange={e => updateLoan('prepayment_penalty', parsePenaltyString(e.target.value))}
-                  style={{...inputStyle, width: 200}}
-                />
-                <span style={{ fontSize: 10, color: '#64748b' }}>
-                  {deal.loan.prepayment_penalty.length > 0
-                    ? `${deal.loan.prepayment_penalty.length}-year declining schedule`
-                    : 'No penalty (enter dash-separated annual rates, e.g. 10-9-8-7-6-5-4-3-2-1)'
-                  }
-                </span>
-              </div>
-            </div>
-
-            {/* Loan Pricing Override */}
-            <div style={{ marginTop: 8, padding: '8px 10px', background: '#0f172a', borderRadius: 6, border: '1px solid #334155' }}>
-              <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6, fontStyle: 'italic' }}>
-                Loan Pricing Override (used for loan pricing analytics only, not for bond waterfall)
-              </div>
-              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
-                  <input type="checkbox"
-                    checked={deal.loan_pricing_profile !== null}
-                    onChange={e => setDeal(d => ({
-                      ...d,
-                      loan_pricing_profile: e.target.checked
-                        ? { amort_wam_override: d.loan.amort_wam, balloon_override: d.loan.balloon, io_period_override: null, wam_override: null }
-                        : null,
-                    }))}
-                  />
-                  Enable Override
-                </label>
-                {deal.loan_pricing_profile && <>
-                  <label style={labelStyle}>Amort WAM</label>
-                  <input type="number" value={deal.loan_pricing_profile.amort_wam_override ?? ''} onChange={e => setDeal(d => ({ ...d, loan_pricing_profile: { ...d.loan_pricing_profile!, amort_wam_override: e.target.value ? parseInt(e.target.value) : null } }))} style={{...inputStyle, width: 60}} />
-                  <label style={labelStyle}>Balloon</label>
-                  <input type="number" value={deal.loan_pricing_profile.balloon_override ?? ''} onChange={e => setDeal(d => ({ ...d, loan_pricing_profile: { ...d.loan_pricing_profile!, balloon_override: e.target.value ? parseInt(e.target.value) : null } }))} style={{...inputStyle, width: 60}} />
-                  <label style={labelStyle}>IO Period</label>
-                  <input type="number" value={deal.loan_pricing_profile.io_period_override ?? ''} onChange={e => setDeal(d => ({ ...d, loan_pricing_profile: { ...d.loan_pricing_profile!, io_period_override: e.target.value ? parseInt(e.target.value) : null } }))} style={{...inputStyle, width: 60}} />
-                  <label style={labelStyle}>WAM</label>
-                  <input type="number" value={deal.loan_pricing_profile.wam_override ?? ''} onChange={e => setDeal(d => ({ ...d, loan_pricing_profile: { ...d.loan_pricing_profile!, wam_override: e.target.value ? parseInt(e.target.value) : null } }))} style={{...inputStyle, width: 60}} />
-                </>}
-              </div>
+              {deal.loans.length === 1 && <>
+                Fee = {((deal.loans[0].wac_gross - deal.loans[0].coupon_net) * 10000).toFixed(0)} bp
+                &nbsp;|&nbsp; Term = {Math.floor(deal.loans[0].wam / 12)}yr {deal.loans[0].wam % 12}mo
+              </>}
+              {deal.loans.length > 1 && <>
+                Loans: {deal.loans.length} &bull; Wtd Cpn: {totalFace > 0 ? ((deal.loans.reduce((s, l) => s + l.original_face * l.coupon_net, 0) / totalFace) * 100).toFixed(2) : '0'}%
+              </>}
             </div>
           </Section>
 

@@ -438,6 +438,90 @@ def apply_prepay_overlay(
     return contractual
 
 
+def aggregate_cashflows(all_cfs: list[list[CashflowRow]]) -> list[CashflowRow]:
+    """Aggregate multiple loans' cashflows by month.
+
+    Sums financial fields across loans. Uses the first loan's date fields
+    as the reference. Handles different-length streams (different balloon months).
+    """
+    if not all_cfs:
+        return []
+    if len(all_cfs) == 1:
+        return all_cfs[0]
+
+    # Collect all months across all loans
+    month_set: set[int] = set()
+    for cfs in all_cfs:
+        for row in cfs:
+            month_set.add(row.month)
+
+    # Index each loan's cashflows by month for fast lookup
+    indexed: list[dict[int, CashflowRow]] = []
+    for cfs in all_cfs:
+        indexed.append({row.month: row for row in cfs})
+
+    result: list[CashflowRow] = []
+    for month in sorted(month_set):
+        # Use first loan that has this month for date fields
+        ref = None
+        for idx_map in indexed:
+            if month in idx_map:
+                ref = idx_map[month]
+                break
+        if ref is None:
+            continue
+
+        agg = CashflowRow(
+            month=month,
+            date_serial=ref.date_serial,
+            cf_date_serial=ref.cf_date_serial,
+            year_frac=ref.year_frac,
+            beg_bal=0.0,
+            pmt_to_agy=0.0,
+            int_to_inv=0.0,
+            int_to_agy=0.0,
+            reg_prn=0.0,
+            rem_prn=0.0,
+            balloon_pay=0.0,
+            end_bal=0.0,
+            net_prn=0.0,
+            net_flow=0.0,
+            unsched_prn=0.0,
+            total_prn=0.0,
+            smm=0.0,
+            annual_prepay_rate=0.0,
+        )
+
+        count = 0
+        for idx_map in indexed:
+            if month in idx_map:
+                row = idx_map[month]
+                agg.beg_bal += row.beg_bal
+                agg.pmt_to_agy += row.pmt_to_agy
+                agg.int_to_inv += row.int_to_inv
+                agg.int_to_agy += row.int_to_agy
+                agg.reg_prn += row.reg_prn
+                agg.rem_prn += row.rem_prn
+                agg.balloon_pay += row.balloon_pay
+                agg.end_bal += row.end_bal
+                agg.net_prn += row.net_prn
+                agg.net_flow += row.net_flow
+                agg.unsched_prn += row.unsched_prn
+                agg.total_prn += row.total_prn
+                agg.smm += row.smm
+                agg.annual_prepay_rate += row.annual_prepay_rate
+                count += 1
+
+        # Average the rate fields
+        if count > 0:
+            agg.smm /= count
+            agg.annual_prepay_rate /= count
+
+        result.append(agg)
+
+    return result
+
+
 def generate_loan_pricing_cashflows(
     loan: LoanInput,
     profile: dict,
