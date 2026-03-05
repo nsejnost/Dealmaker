@@ -498,8 +498,11 @@ export default function App() {
                 <tbody>
                   {deal.loans.map((loan, i) => {
                     const a = result?.per_loan_analytics?.[i];
+                    const hasOverrides = loan.lp_amort_wam != null || loan.lp_balloon != null || loan.lp_io_period != null || loan.lp_wam != null;
+                    const lp = hasOverrides ? result?.per_loan_pricing_analytics?.[i] : null;
                     return (
-                      <tr key={i}>
+                      <React.Fragment key={i}>
+                      <tr>
                         <td style={tdStyle}>
                           {deal.loans.length > 1 && <button onClick={() => removeLoan(i)} style={{...btnMini, color: '#f87171'}}>x</button>}
                         </td>
@@ -534,7 +537,7 @@ export default function App() {
                         <td style={tdStyle}><input type="number" value={loan.lp_balloon ?? ''} onChange={e => updateLoan(i, 'lp_balloon', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 45}} placeholder="-" /></td>
                         <td style={tdStyle}><input type="number" value={loan.lp_io_period ?? ''} onChange={e => updateLoan(i, 'lp_io_period', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 40}} placeholder="-" /></td>
                         <td style={tdStyle}><input type="number" value={loan.lp_wam ?? ''} onChange={e => updateLoan(i, 'lp_wam', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 45}} placeholder="-" /></td>
-                        {/* Analytics */}
+                        {/* Analytics - show contractual */}
                         {result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (() => {
                           if (!a) return <td colSpan={8} style={tdStyle}>-</td>;
                           return <>
@@ -549,6 +552,25 @@ export default function App() {
                           </>;
                         })()}
                       </tr>
+                      {/* LP Override analytics row - shown when overrides are set */}
+                      {lp && result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (
+                        <tr style={{ background: '#1a1a2e' }}>
+                          <td style={tdStyle}></td>
+                          <td colSpan={12} style={{...tdStyle, color: '#a78bfa', fontSize: 10, fontStyle: 'italic'}}>LP Override</td>
+                          <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={3}></td>
+                          <td style={{...tdStyle, borderLeft: '2px solid #475569'}}></td>
+                          <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={4}></td>
+                          <td style={{...tdStyleR, borderLeft: '2px solid #475569', color: '#a78bfa'}}>{lp.price.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#a78bfa'}}>{lp.yield_pct.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#a78bfa'}}>{lp.j_spread.toFixed(1)}</td>
+                          <td style={{...tdStyleR, color: '#a78bfa'}}>{lp.wal.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#a78bfa'}}>{lp.modified_duration.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#a78bfa'}}>{lp.convexity.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#a78bfa'}}>{lp.risk_dpdy.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#a78bfa'}}>{lp.tsy_rate_at_wal.toFixed(4)}</td>
+                        </tr>
+                      )}
+                      </React.Fragment>
                     );
                   })}
                   {/* Aggregated total row */}
@@ -579,28 +601,6 @@ export default function App() {
                       {result && (!result.collateral_analytics) && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (
                         <td colSpan={8} style={{...tdStyle, borderLeft: '2px solid #475569'}}>-</td>
                       )}
-                    </tr>
-                  )}
-                  {/* Single-loan aggregated analytics shown even for 1 loan */}
-                  {deal.loans.length === 1 && result && result.collateral_analytics && !result.per_loan_analytics?.length && (
-                    <tr style={{ background: '#0f172a' }}>
-                      <td colSpan={13} style={tdStyle}></td>
-                      <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={3}></td>
-                      <td style={{...tdStyle, borderLeft: '2px solid #475569'}}></td>
-                      <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={4}></td>
-                      {(() => {
-                        const a = result.collateral_analytics!;
-                        return <>
-                          <td style={{...tdStyleR, borderLeft: '2px solid #475569'}}>{a.price.toFixed(4)}</td>
-                          <td style={tdStyleR}>{a.yield_pct.toFixed(4)}</td>
-                          <td style={tdStyleR}>{a.j_spread.toFixed(1)}</td>
-                          <td style={tdStyleR}>{a.wal.toFixed(4)}</td>
-                          <td style={tdStyleR}>{a.modified_duration.toFixed(4)}</td>
-                          <td style={tdStyleR}>{a.convexity.toFixed(4)}</td>
-                          <td style={tdStyleR}>{a.risk_dpdy.toFixed(4)}</td>
-                          <td style={tdStyleR}>{a.tsy_rate_at_wal.toFixed(4)}</td>
-                        </>;
-                      })()}
                     </tr>
                   )}
                 </tbody>
