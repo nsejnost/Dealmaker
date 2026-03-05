@@ -25,6 +25,7 @@ from app.engines.cashflow_engine import (
     generate_loan_pricing_cashflows,
     apply_cpj_overlay,
     apply_prepay_overlay,
+    aggregate_cashflows,
     _date_to_serial,
 )
 from app.engines.analytics_engine import compute_full_analytics
@@ -49,63 +50,145 @@ DEFAULT_TSY_CURVE = TreasuryCurve(points=[
 
 
 def run_deal(deal: Deal) -> DealResult:
-    """Execute the full deal computation pipeline."""
-    loan = deal.loan
+    """Execute the full deal computation pipeline with multi-loan support."""
+    loans = deal.get_loans()
+    if not loans:
+        raise ValueError("No loans provided")
+
     pricing = deal.pricing
-
-    settle_serial = _date_to_serial(pricing.settle_date)
-    dated_serial = _date_to_serial(loan.dated_date)
-
     curve = deal.treasury_curve if deal.treasury_curve.points else DEFAULT_TSY_CURVE
 
-    # --- Stream A: Contractual cashflows (spreadsheet parity) ---
-    contractual_cfs = generate_contractual_cashflows(loan, pricing.settle_date)
+    # --- Per-loan processing ---
+    all_contractual: list[list[CashflowRow]] = []
+    all_loan_pricing: list[list[CashflowRow]] = []
+    all_bond_collat: list[list[CashflowRow]] = []
+    per_loan_analytics: list[AnalyticsOutput | None] = []
+    per_loan_pricing_analytics: list[AnalyticsOutput | None] = []
+
+    for loan in loans:
+        # Resolve per-loan settle (fall back to deal.pricing.settle_date)
+        settle = loan.settle_date or pricing.settle_date
+        settle_serial = _date_to_serial(settle)
+        dated_serial = _date_to_serial(loan.dated_date)
+
+        # Per-loan pricing
+        px_type = loan.pricing_type.value
+        px_input = loan.pricing_input
+
+        # --- Stream A: Contractual cashflows ---
+        cfs = generate_contractual_cashflows(loan, settle)
+        all_contractual.append(cfs)
+
+        analytics = compute_full_analytics(
+            cashflows=cfs,
+            settle_serial=settle_serial,
+            dated_date_serial=dated_serial,
+            coupon_net=loan.coupon_net,
+            original_face=loan.original_face,
+            pricing_type=px_type,
+            pricing_input=px_input,
+            curve=curve,
+        )
+        per_loan_analytics.append(analytics)
+
+        # --- Stream B: Loan Pricing cashflows (per-loan overrides) ---
+        has_override = any(v is not None for v in [
+            loan.lp_amort_wam, loan.lp_balloon, loan.lp_io_period, loan.lp_wam,
+        ])
+
+        # Also check legacy loan_pricing_profile for backward compat (first loan only)
+        if not has_override and deal.loan_pricing_profile and loan is loans[0]:
+            profile_dict = deal.loan_pricing_profile.model_dump()
+            has_override = any(v is not None for v in profile_dict.values())
+            if has_override:
+                lp_cfs = generate_loan_pricing_cashflows(loan, profile_dict, settle)
+                all_loan_pricing.append(lp_cfs)
+                lp_analytics = compute_full_analytics(
+                    cashflows=lp_cfs,
+                    settle_serial=settle_serial,
+                    dated_date_serial=dated_serial,
+                    coupon_net=loan.coupon_net,
+                    original_face=loan.original_face,
+                    pricing_type=px_type,
+                    pricing_input=px_input,
+                    curve=curve,
+                )
+                per_loan_pricing_analytics.append(lp_analytics)
+        elif has_override:
+            profile = {
+                "amort_wam_override": loan.lp_amort_wam,
+                "balloon_override": loan.lp_balloon,
+                "io_period_override": loan.lp_io_period,
+                "wam_override": loan.lp_wam,
+            }
+            lp_cfs = generate_loan_pricing_cashflows(loan, profile, settle)
+            all_loan_pricing.append(lp_cfs)
+            lp_analytics = compute_full_analytics(
+                cashflows=lp_cfs,
+                settle_serial=settle_serial,
+                dated_date_serial=dated_serial,
+                coupon_net=loan.coupon_net,
+                original_face=loan.original_face,
+                pricing_type=px_type,
+                pricing_input=px_input,
+                curve=curve,
+            )
+            per_loan_pricing_analytics.append(lp_analytics)
+
+        if not has_override:
+            all_loan_pricing.append(cfs)
+            per_loan_pricing_analytics.append(analytics)
+
+        # --- Stream C: Bond collateral (contractual + prepay) ---
+        prepay = deal.structure.prepay
+        if prepay.prepay_type.value != "None":
+            bc_cfs = apply_prepay_overlay(cfs, loan, prepay)
+        elif deal.cpj.enabled:
+            cpj = deal.cpj.model_copy()
+            if cpj.lockout_months == 0 and loan.lockout_months > 0:
+                cpj.lockout_months = loan.lockout_months
+            bc_cfs = apply_cpj_overlay(cfs, loan, cpj)
+        else:
+            bc_cfs = cfs
+        all_bond_collat.append(bc_cfs)
+
+    # --- Aggregate across loans ---
+    contractual_cfs = aggregate_cashflows(all_contractual)
+    loan_pricing_cfs = aggregate_cashflows(all_loan_pricing)
+    bond_collat_cfs = aggregate_cashflows(all_bond_collat)
+
+    # Aggregated analytics on aggregated cashflows
+    total_face = sum(l.original_face for l in loans)
+    weighted_coupon = (
+        sum(l.original_face * l.coupon_net for l in loans) / total_face
+        if total_face > 0 else loans[0].coupon_net
+    )
+    # Use first loan's dates for aggregated analytics
+    agg_settle = loans[0].settle_date or pricing.settle_date
+    agg_settle_serial = _date_to_serial(agg_settle)
+    agg_dated_serial = _date_to_serial(loans[0].dated_date)
 
     contractual_analytics = compute_full_analytics(
         cashflows=contractual_cfs,
-        settle_serial=settle_serial,
-        dated_date_serial=dated_serial,
-        coupon_net=loan.coupon_net,
-        original_face=loan.original_face,
+        settle_serial=agg_settle_serial,
+        dated_date_serial=agg_dated_serial,
+        coupon_net=weighted_coupon,
+        original_face=total_face,
         pricing_type=pricing.pricing_type.value,
         pricing_input=pricing.pricing_input,
         curve=curve,
     )
 
-    # --- Stream B: Loan Pricing cashflows (market convention) ---
-    loan_pricing_cfs = contractual_cfs  # default: same as contractual
-    loan_pricing_analytics = contractual_analytics
-
-    if deal.loan_pricing_profile:
-        profile_dict = deal.loan_pricing_profile.model_dump()
-        if any(v is not None for v in profile_dict.values()):
-            loan_pricing_cfs = generate_loan_pricing_cashflows(
-                loan, profile_dict, pricing.settle_date
-            )
-            loan_pricing_analytics = compute_full_analytics(
-                cashflows=loan_pricing_cfs,
-                settle_serial=settle_serial,
-                dated_date_serial=dated_serial,
-                coupon_net=loan.coupon_net,
-                original_face=loan.original_face,
-                pricing_type=pricing.pricing_type.value,
-                pricing_input=pricing.pricing_input,
-                curve=curve,
-            )
-
-    # --- Stream C: Bond collateral cashflows (contractual + prepay) ---
-    # Use structure.prepay (new) or fall back to deal.cpj (legacy)
-    prepay = deal.structure.prepay
-    if prepay.prepay_type.value != "None":
-        bond_collat_cfs = apply_prepay_overlay(contractual_cfs, loan, prepay)
-    elif deal.cpj.enabled:
-        # Backward compat: use legacy CPJ if structure.prepay is None
-        cpj = deal.cpj.model_copy()
-        if cpj.lockout_months == 0 and loan.lockout_months > 0:
-            cpj.lockout_months = loan.lockout_months
-        bond_collat_cfs = apply_cpj_overlay(contractual_cfs, loan, cpj)
-    else:
-        bond_collat_cfs = contractual_cfs
+    loan_pricing_analytics = compute_full_analytics(
+        cashflows=loan_pricing_cfs,
+        settle_serial=agg_settle_serial,
+        dated_date_serial=agg_dated_serial,
+        coupon_net=weighted_coupon,
+        original_face=total_face,
+        pricing_type=pricing.pricing_type.value,
+        pricing_input=pricing.pricing_input,
+        curve=curve,
+    )
 
     # --- Waterfall ---
     bond_cashflows: dict[str, list[BondCashflowRow]] = {}
@@ -116,7 +199,8 @@ def run_deal(deal: Deal) -> DealResult:
         bond_cashflows = run_waterfall(
             bond_collat_cfs,
             deal.structure,
-            [loan],
+            loans,
+            per_loan_bond_cfs=all_bond_collat,
         )
 
         # Compute bond analytics
@@ -124,7 +208,7 @@ def run_deal(deal: Deal) -> DealResult:
             if cls.class_id in bond_cashflows:
                 ba = compute_bond_analytics(
                     bond_cashflows[cls.class_id],
-                    settle_serial,
+                    agg_settle_serial,
                     bond_collat_cfs,
                     cls.original_balance if cls.original_balance > 0 else 1.0,
                     cls.pricing_type.value,
@@ -149,8 +233,10 @@ def run_deal(deal: Deal) -> DealResult:
     return DealResult(
         collateral_cashflows=contractual_cfs,
         collateral_analytics=contractual_analytics,
+        per_loan_analytics=per_loan_analytics,
         loan_pricing_cashflows=loan_pricing_cfs,
         loan_pricing_analytics=loan_pricing_analytics,
+        per_loan_pricing_analytics=per_loan_pricing_analytics,
         bond_collateral_cashflows=bond_collat_cfs,
         bond_cashflows=bond_cashflows,
         bond_analytics=bond_analytics,

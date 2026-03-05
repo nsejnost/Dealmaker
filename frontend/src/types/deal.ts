@@ -12,6 +12,15 @@ export interface LoanInput {
   seasoning: number;
   lockout_months: number;
   prepayment_penalty: number[];
+  // Per-loan pricing
+  pricing_type: 'Price' | 'Yield' | 'JSpread';
+  pricing_input: number;
+  settle_date: string | null;
+  // Per-loan pricing overrides
+  lp_amort_wam: number | null;
+  lp_balloon: number | null;
+  lp_io_period: number | null;
+  lp_wam: number | null;
 }
 
 export interface LoanPricingProfile {
@@ -128,8 +137,10 @@ export interface BondCashflowRow {
 export interface DealResult {
   collateral_cashflows: CashflowRow[];
   collateral_analytics: AnalyticsOutput | null;
+  per_loan_analytics: (AnalyticsOutput | null)[];
   loan_pricing_cashflows: CashflowRow[];
   loan_pricing_analytics: AnalyticsOutput | null;
+  per_loan_pricing_analytics: (AnalyticsOutput | null)[];
   bond_collateral_cashflows: CashflowRow[];
   bond_cashflows: Record<string, BondCashflowRow[]>;
   bond_analytics: Record<string, AnalyticsOutput>;
@@ -139,7 +150,8 @@ export interface DealResult {
 export interface Deal {
   deal_id: string;
   deal_name: string;
-  loan: LoanInput;
+  loans: LoanInput[];
+  loan: LoanInput;  // backward compat
   pricing: PricingInput;
   treasury_curve: TreasuryCurve;
   loan_pricing_profile: LoanPricingProfile | null;
