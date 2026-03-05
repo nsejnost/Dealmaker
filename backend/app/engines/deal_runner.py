@@ -24,6 +24,7 @@ from app.engines.cashflow_engine import (
     generate_contractual_cashflows,
     generate_loan_pricing_cashflows,
     apply_cpj_overlay,
+    apply_prepay_overlay,
     _date_to_serial,
 )
 from app.engines.analytics_engine import compute_full_analytics
@@ -92,9 +93,13 @@ def run_deal(deal: Deal) -> DealResult:
                 curve=curve,
             )
 
-    # --- Stream C: Bond collateral cashflows (contractual + CPJ) ---
-    if deal.cpj.enabled:
-        # Copy lockout from loan if not set on CPJ
+    # --- Stream C: Bond collateral cashflows (contractual + prepay) ---
+    # Use structure.prepay (new) or fall back to deal.cpj (legacy)
+    prepay = deal.structure.prepay
+    if prepay.prepay_type.value != "None":
+        bond_collat_cfs = apply_prepay_overlay(contractual_cfs, loan, prepay)
+    elif deal.cpj.enabled:
+        # Backward compat: use legacy CPJ if structure.prepay is None
         cpj = deal.cpj.model_copy()
         if cpj.lockout_months == 0 and loan.lockout_months > 0:
             cpj.lockout_months = loan.lockout_months
@@ -178,8 +183,11 @@ def run_scenario_grid(
             # Create modified deal
             mod_deal = deal.model_copy(deep=True)
 
-            # Adjust CPJ speed
-            if mod_deal.cpj.enabled:
+            # Adjust prepay speed
+            prepay = mod_deal.structure.prepay
+            if prepay.prepay_type.value != "None":
+                mod_deal.structure.prepay.speed = deal.structure.prepay.speed * mult
+            elif mod_deal.cpj.enabled:
                 mod_deal.cpj.cpj_speed = deal.cpj.cpj_speed * mult
 
             result = run_deal(mod_deal)

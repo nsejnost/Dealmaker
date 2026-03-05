@@ -11,6 +11,7 @@ export interface LoanInput {
   balloon: number;
   seasoning: number;
   lockout_months: number;
+  prepayment_penalty: number[];
 }
 
 export interface LoanPricingProfile {
@@ -50,6 +51,16 @@ export interface CPJInput {
   pld_multiplier: number;
 }
 
+export type PrepaymentType = 'None' | 'CPJ' | 'CPR';
+
+export interface PrepaymentAssumption {
+  prepay_type: PrepaymentType;
+  speed: number;
+  lockout_months: number;
+  pld_curve: PLDCurveEntry[];
+  pld_multiplier: number;
+}
+
 export interface BondClass {
   class_id: string;
   class_type: 'SEQ' | 'PT' | 'IO';
@@ -67,6 +78,7 @@ export interface DealStructure {
   classes: BondClass[];
   pt_share: number;
   fee_rate: number;
+  prepay: PrepaymentAssumption;
 }
 
 export interface CashflowRow {
@@ -110,6 +122,7 @@ export interface BondCashflowRow {
   principal_paid: number;
   end_bal: number;
   coupon_rate: number;
+  penalty_income: number;
 }
 
 export interface DealResult {

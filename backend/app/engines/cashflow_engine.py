@@ -45,6 +45,7 @@ from app.models.loan import (
     LoanInput,
     CPJInput,
     PLDCurveEntry,
+    PrepaymentAssumption,
 )
 
 
@@ -337,6 +338,104 @@ def apply_cpj_overlay(
             break
 
     return result
+
+
+def apply_cpr_overlay(
+    contractual: list[CashflowRow],
+    loan: LoanInput,
+    cpr_annual: float,
+) -> list[CashflowRow]:
+    """Apply a flat constant prepayment rate (CPR) overlay.
+
+    CPR is expressed as a percentage (e.g., 10.0 = 10% CPR).
+    SMM = 1 - (1 - CPR/100)^(1/12)
+    """
+    annual_rate = min(max(cpr_annual / 100.0, 0.0), 1.0)
+    smm = 1.0 - (1.0 - annual_rate) ** (1.0 / 12.0)
+
+    result: list[CashflowRow] = []
+    current_bal = contractual[0].beg_bal if contractual else 0.0
+
+    for row in contractual:
+        new_row = row.model_copy()
+
+        if row.month == 0:
+            new_row.beg_bal = current_bal
+            new_row.end_bal = current_bal
+            result.append(new_row)
+            continue
+
+        new_row.beg_bal = current_bal
+
+        nr = loan.coupon_net / 12.0
+        gr = loan.wac_gross / 12.0
+        new_row.int_to_inv = current_bal * nr
+        new_row.int_to_agy = current_bal * gr
+
+        totmo = loan.seasoning + row.month
+        if totmo <= loan.io_period or current_bal < 0.000001:
+            sched_prn = 0.0
+            new_row.pmt_to_agy = current_bal * gr if current_bal >= 0.000001 else 0.0
+        else:
+            pmt = _excel_pmt(gr, loan.amort_wam, loan.original_face)
+            new_row.pmt_to_agy = pmt if current_bal >= 0.000001 else 0.0
+            sched_prn = max(0.0, pmt - current_bal * gr)
+
+        sched_prn = min(sched_prn, current_bal)
+        new_row.reg_prn = sched_prn
+
+        prepayable = max(0.0, current_bal - sched_prn)
+        unsched_prn = prepayable * smm
+
+        rembal = max(0, loan.balloon - loan.seasoning)
+        is_balloon = (row.month == rembal)
+
+        if is_balloon:
+            total_prn = current_bal
+            new_row.balloon_pay = current_bal - sched_prn
+        else:
+            total_prn = min(current_bal, sched_prn + unsched_prn)
+            new_row.balloon_pay = 0.0
+
+        new_row.unsched_prn = unsched_prn if not is_balloon else (current_bal - sched_prn)
+        new_row.total_prn = total_prn
+        new_row.smm = smm
+        new_row.annual_prepay_rate = annual_rate
+
+        new_row.rem_prn = current_bal - sched_prn
+        new_row.end_bal = max(0.0, current_bal - total_prn)
+        new_row.net_prn = total_prn
+        new_row.net_flow = total_prn + new_row.int_to_inv
+
+        current_bal = new_row.end_bal
+        result.append(new_row)
+
+        if current_bal < 0.000001:
+            break
+
+    return result
+
+
+def apply_prepay_overlay(
+    contractual: list[CashflowRow],
+    loan: LoanInput,
+    prepay: PrepaymentAssumption,
+) -> list[CashflowRow]:
+    """Dispatch to appropriate prepayment overlay based on type."""
+    if prepay.prepay_type.value == "CPJ":
+        cpj = CPJInput(
+            enabled=True,
+            cpj_speed=prepay.speed,
+            lockout_months=prepay.lockout_months,
+            pld_curve=prepay.pld_curve,
+            pld_multiplier=prepay.pld_multiplier,
+        )
+        if cpj.lockout_months == 0 and loan.lockout_months > 0:
+            cpj.lockout_months = loan.lockout_months
+        return apply_cpj_overlay(contractual, loan, cpj)
+    elif prepay.prepay_type.value == "CPR":
+        return apply_cpr_overlay(contractual, loan, prepay.speed)
+    return contractual
 
 
 def generate_loan_pricing_cashflows(

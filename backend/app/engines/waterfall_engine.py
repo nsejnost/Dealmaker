@@ -46,6 +46,22 @@ def compute_pool_wac(
     return weighted / total_bal
 
 
+def _get_penalty_rate(loan: LoanInput, month: int) -> float:
+    """Get the prepayment penalty rate for a given month.
+
+    The penalty schedule is an annual step-down, e.g. [10,9,8,7,6,5,4,3,2,1]
+    means 10% in year 1, 9% in year 2, etc.
+    """
+    if not loan.prepayment_penalty:
+        return 0.0
+    # Loan year (0-indexed): year 0 = months 1-12, year 1 = months 13-24, etc.
+    age = loan.seasoning + month
+    year_idx = max(0, (age - 1)) // 12
+    if year_idx < len(loan.prepayment_penalty):
+        return loan.prepayment_penalty[year_idx]
+    return 0.0
+
+
 def run_waterfall(
     collateral_cashflows: list[CashflowRow],
     structure: DealStructure,
@@ -173,6 +189,31 @@ def run_waterfall(
             entry.principal_paid = cls_prin
             entry.end_bal = cls_bal - cls_prin
             bond_bals[cls.class_id] = entry.end_bal
+
+        # Prepayment penalty income
+        unsched_prn = cf.unsched_prn
+        if unsched_prn > 0 and loans:
+            penalty_rate = _get_penalty_rate(loans[0], month)
+            penalty = unsched_prn * penalty_rate / 100.0
+        else:
+            penalty = 0.0
+
+        if penalty > 0:
+            if io_classes:
+                # All penalty income goes to IO class
+                for cls in io_classes:
+                    entry = result[cls.class_id][-1]
+                    entry.penalty_income = penalty
+            else:
+                # Distribute pro-rata to all bond classes as excess cashflow
+                total_bal = sum(bond_bals[c.class_id] for c in seq_classes + pt_classes)
+                for cls in seq_classes + pt_classes:
+                    entry = result[cls.class_id][-1]
+                    if total_bal > 0:
+                        share = bond_bals[cls.class_id] / total_bal
+                    else:
+                        share = 1.0 / max(1, len(seq_classes) + len(pt_classes))
+                    entry.penalty_income = penalty * share
 
         # Update collateral balance for next period
         collat_bal = cf.end_bal

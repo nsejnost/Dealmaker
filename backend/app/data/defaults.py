@@ -9,6 +9,8 @@ from app.models.loan import (
     LoanInput,
     LoanPricingProfile,
     PLDCurveEntry,
+    PrepaymentAssumption,
+    PrepaymentType,
     PricingInput,
     PricingType,
     TreasuryCurve,
