@@ -118,14 +118,19 @@ def generate_contractual_cashflows(
     gwac = loan.wac_gross
     nwac = loan.coupon_net
     amortwam = loan.amort_wam
-    io = loan.io_period
-    balloon = loan.balloon
+    io = loan.io_period if loan.io_period is not None else 0
+    balloon = loan.balloon  # None means no balloon (fully amortizing)
     delay = loan.delay
     seas = loan.seasoning
+    wam = loan.wam
 
     gr = gwac / 12.0
     nr = nwac / 12.0
-    rembal = max(0, balloon - seas)
+    # When balloon is None → fully amortizing (use wam as term)
+    if balloon is not None:
+        rembal = max(0, balloon - seas)
+    else:
+        rembal = max(0, wam - seas)
     tol = 0.000001
 
     pmt = _excel_pmt(gr, amortwam, origbal)
@@ -175,8 +180,8 @@ def generate_contractual_cashflows(
 
         remprn = begbal - regprn
 
-        # Balloon payment
-        if mo == rembal:
+        # Balloon payment (only if balloon is explicitly set)
+        if balloon is not None and mo == rembal:
             balloonpay = remprn
         else:
             balloonpay = 0.0
@@ -289,8 +294,9 @@ def apply_cpj_overlay(
 
         # Scheduled principal from contractual amort applied to current balance
         # We need to compute what the scheduled principal would be on current_bal
+        io_period = loan.io_period if loan.io_period is not None else 0
         totmo = loan.seasoning + row.month
-        if totmo <= loan.io_period or current_bal < 0.000001:
+        if totmo <= io_period or current_bal < 0.000001:
             sched_prn = 0.0
             new_row.pmt_to_agy = current_bal * gr if current_bal >= 0.000001 else 0.0
         else:
@@ -308,8 +314,12 @@ def apply_cpj_overlay(
         unsched_prn = prepayable * smm
 
         # Check if this is the balloon month
-        rembal = max(0, loan.balloon - loan.seasoning)
-        is_balloon = (row.month == rembal)
+        balloon = loan.balloon
+        if balloon is not None:
+            rembal = max(0, balloon - loan.seasoning)
+            is_balloon = (row.month == rembal)
+        else:
+            is_balloon = False
 
         if is_balloon:
             # At balloon, remaining balance pays off
@@ -372,8 +382,9 @@ def apply_cpr_overlay(
         new_row.int_to_inv = current_bal * nr
         new_row.int_to_agy = current_bal * gr
 
+        io_period = loan.io_period if loan.io_period is not None else 0
         totmo = loan.seasoning + row.month
-        if totmo <= loan.io_period or current_bal < 0.000001:
+        if totmo <= io_period or current_bal < 0.000001:
             sched_prn = 0.0
             new_row.pmt_to_agy = current_bal * gr if current_bal >= 0.000001 else 0.0
         else:
@@ -387,8 +398,12 @@ def apply_cpr_overlay(
         prepayable = max(0.0, current_bal - sched_prn)
         unsched_prn = prepayable * smm
 
-        rembal = max(0, loan.balloon - loan.seasoning)
-        is_balloon = (row.month == rembal)
+        balloon = loan.balloon
+        if balloon is not None:
+            rembal = max(0, balloon - loan.seasoning)
+            is_balloon = (row.month == rembal)
+        else:
+            is_balloon = False
 
         if is_balloon:
             total_prn = current_bal
@@ -430,7 +445,7 @@ def apply_prepay_overlay(
             pld_curve=prepay.pld_curve,
             pld_multiplier=prepay.pld_multiplier,
         )
-        if cpj.lockout_months == 0 and loan.lockout_months > 0:
+        if cpj.lockout_months == 0 and (loan.lockout_months or 0) > 0:
             cpj.lockout_months = loan.lockout_months
         return apply_cpj_overlay(contractual, loan, cpj)
     elif prepay.prepay_type.value == "CPR":

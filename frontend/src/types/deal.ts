@@ -7,10 +7,10 @@ export interface LoanInput {
   wac_gross: number;
   wam: number;
   amort_wam: number;
-  io_period: number;
-  balloon: number;
+  io_period: number | null;
+  balloon: number | null;
   seasoning: number;
-  lockout_months: number;
+  lockout_months: number | null;
   prepayment_penalty: number[];
   // Per-loan pricing
   pricing_type: 'Price' | 'Yield' | 'JSpread';

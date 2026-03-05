@@ -43,10 +43,10 @@ class LoanInput(BaseModel):
     wac_gross: float = Field(default=0.0525, description="Gross WAC rate (Excel F14)")
     wam: int = Field(default=480, description="Weighted average maturity months (Excel F15)")
     amort_wam: int = Field(default=480, description="Amortization WAM months (Excel F16)")
-    io_period: int = Field(default=0, description="Interest-only period months (Excel F17)")
-    balloon: int = Field(default=120, description="Balloon month (Excel F18)")
+    io_period: Optional[int] = Field(default=None, description="Interest-only period months (None = no IO)")
+    balloon: Optional[int] = Field(default=None, description="Balloon month (None = no balloon, fully amortizing)")
     seasoning: int = Field(default=0, description="Seasoning months (Excel F19)")
-    lockout_months: int = Field(default=0, description="Lockout months for CPJ")
+    lockout_months: Optional[int] = Field(default=None, description="Lockout months for CPJ (None = no lockout)")
     prepayment_penalty: list[float] = Field(
         default_factory=list,
         description="Declining annual penalty schedule, e.g. [10,9,8,7,6,5,4,3,2,1]",
