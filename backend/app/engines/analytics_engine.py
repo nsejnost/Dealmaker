@@ -208,7 +208,7 @@ def compute_convexity(
     if abs(p0) < 1e-15:
         return 0.0
 
-    return (p_up + p_dn - 2.0 * p0) / ((dy / 100.0) ** 2 * p0)
+    return (p_up + p_dn - 2.0 * p0) / ((dy / 100.0) ** 2 * p0) / 100.0
 
 
 def compute_risk_dpdy(
@@ -226,7 +226,7 @@ def compute_risk_dpdy(
     p_up = compute_price_from_yield(cashflows, annual_yield + dy, settle_serial, original_face)
     p_dn = compute_price_from_yield(cashflows, annual_yield - dy, settle_serial, original_face)
 
-    return -(p_up - p_dn) / (2.0 * (dy / 100.0))
+    return -(p_up - p_dn) / (2.0 * dy)
 
 
 def interpolate_tsy_rate(wal: float, curve: TreasuryCurve) -> float:
