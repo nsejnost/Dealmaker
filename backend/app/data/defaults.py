@@ -9,6 +9,8 @@ from app.models.loan import (
     LoanInput,
     LoanPricingProfile,
     PLDCurveEntry,
+    PrepaymentAssumption,
+    PrepaymentType,
     PricingInput,
     PricingType,
     TreasuryCurve,
@@ -51,22 +53,27 @@ DEFAULT_TSY_CURVE = TreasuryCurve(points=[
 
 def make_default_deal() -> Deal:
     """Create default deal matching Excel workbook inputs."""
+    default_loan = LoanInput(
+        dated_date=date(2026, 3, 1),
+        first_settle=date(2026, 3, 1),
+        delay=44,
+        original_face=1_000_000.0,
+        coupon_net=0.05,
+        wac_gross=0.0525,
+        wam=480,
+        amort_wam=480,
+        io_period=0,
+        balloon=120,
+        seasoning=0,
+        pricing_type=PricingType.PRICE,
+        pricing_input=100.0,
+        settle_date=date(2026, 3, 3),
+    )
     return Deal(
         deal_id="default",
         deal_name="GNPL Default (Excel Parity)",
-        loan=LoanInput(
-            dated_date=date(2026, 3, 1),
-            first_settle=date(2026, 3, 1),
-            delay=44,
-            original_face=1_000_000.0,
-            coupon_net=0.05,
-            wac_gross=0.0525,
-            wam=480,
-            amort_wam=480,
-            io_period=0,
-            balloon=120,
-            seasoning=0,
-        ),
+        loans=[default_loan],
+        loan=default_loan,  # backward compat
         pricing=PricingInput(
             pricing_type=PricingType.PRICE,
             pricing_input=100.0,

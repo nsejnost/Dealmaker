@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import type { Deal, DealResult, BondClass, PLDCurveEntry, CashflowRow, BondCashflowRow, AnalyticsOutput } from './types/deal';
+import type { Deal, DealResult, BondClass, PLDCurveEntry, PrepaymentType, LoanInput, CashflowRow, BondCashflowRow, AnalyticsOutput } from './types/deal';
 import { dealApi, type UploadResult } from './api/dealApi';
 import { CashflowChart } from './components/CashflowChart';
 import { BondCashflowChart } from './components/BondCashflowChart';
@@ -20,6 +20,21 @@ function serialToDate(serial: number): string {
 const fmt = (n: number, dec = 2) => n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
 const fmtPct = (n: number, dec = 4) => (n * 100).toFixed(dec) + '%';
 
+function parsePenaltyString(s: string): number[] {
+  if (!s.trim()) return [];
+  return s.split('-').map(v => parseFloat(v.trim())).filter(v => !isNaN(v));
+}
+
+function penaltyToString(arr: number[]): string {
+  if (!arr || arr.length === 0) return '';
+  return arr.join('-');
+}
+
+function termLabel(term: number): string {
+  if (term < 1) return `${(term * 12).toFixed(0)}m`;
+  return `${term}y`;
+}
+
 /* ── defaults ────────────────────────────────────────────────── */
 
 const defaultPLD: PLDCurveEntry[] = [
@@ -37,24 +52,38 @@ const defaultPLD: PLDCurveEntry[] = [
   { start_month: 241, end_month: 9999, annual_rate: 0.0000 },
 ];
 
+function makeDefaultLoan(): LoanInput {
+  return {
+    dated_date: '2026-03-01',
+    first_settle: '2026-03-01',
+    delay: 44,
+    original_face: 1000000,
+    coupon_net: 0.05,
+    wac_gross: 0.0525,
+    wam: 480,
+    amort_wam: 480,
+    io_period: 0,
+    balloon: 120,
+    seasoning: 0,
+    lockout_months: 0,
+    prepayment_penalty: [],
+    pricing_type: 'Price',
+    pricing_input: 100,
+    settle_date: '2026-03-03',
+    lp_amort_wam: null,
+    lp_balloon: null,
+    lp_io_period: null,
+    lp_wam: null,
+  };
+}
+
 function makeDefaultDeal(): Deal {
+  const loan = makeDefaultLoan();
   return {
     deal_id: '',
     deal_name: 'New Deal',
-    loan: {
-      dated_date: '2026-03-01',
-      first_settle: '2026-03-01',
-      delay: 44,
-      original_face: 1000000,
-      coupon_net: 0.05,
-      wac_gross: 0.0525,
-      wam: 480,
-      amort_wam: 480,
-      io_period: 0,
-      balloon: 120,
-      seasoning: 0,
-      lockout_months: 0,
-    },
+    loans: [loan],
+    loan: loan,
     pricing: {
       pricing_type: 'Price',
       pricing_input: 100,
@@ -78,7 +107,18 @@ function makeDefaultDeal(): Deal {
       pld_curve: defaultPLD,
       pld_multiplier: 1.0,
     },
-    structure: { classes: [], pt_share: 0, fee_rate: 0 },
+    structure: {
+      classes: [],
+      pt_share: 0,
+      fee_rate: 0,
+      prepay: {
+        prepay_type: 'None',
+        speed: 15,
+        lockout_months: 0,
+        pld_curve: defaultPLD,
+        pld_multiplier: 1.0,
+      },
+    },
     result: null,
   };
 }
@@ -95,9 +135,14 @@ export default function App() {
   const [showCharts, setShowCharts] = useState(false);
   const [showCashflows, setShowCashflows] = useState(false);
   const [showDealCashflows, setShowDealCashflows] = useState(false);
+  const [activeTab, setActiveTab] = useState<'deal' | 'curve'>('deal');
+  const [pasteText, setPasteText] = useState('');
 
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+
+  // Track if prepay is active (new or legacy)
+  const prepayActive = deal.structure.prepay.prepay_type !== 'None' || deal.cpj.enabled;
 
   useEffect(() => {
     dealApi.listDeals().then(setSavedDeals).catch(() => {});
@@ -110,7 +155,10 @@ export default function App() {
     setError(null);
     try {
       const data: UploadResult = await dealApi.uploadExcel(file);
-      setDeal(d => ({ ...d, loan: data.loan, pricing: data.pricing }));
+      setDeal(d => {
+        const updatedLoan = { ...d.loans[0], ...data.loan };
+        return { ...d, loans: [updatedLoan, ...d.loans.slice(1)], loan: updatedLoan, pricing: { ...d.pricing, ...data.pricing } };
+      });
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -123,7 +171,18 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await dealApi.runInline(deal);
+      // Sync backward compat fields
+      const dealToRun = { ...deal, loan: deal.loans[0] || deal.loan };
+      if (deal.structure.prepay.prepay_type === 'CPJ') {
+        dealToRun.cpj = {
+          enabled: true,
+          cpj_speed: deal.structure.prepay.speed,
+          lockout_months: deal.structure.prepay.lockout_months,
+          pld_curve: deal.structure.prepay.pld_curve,
+          pld_multiplier: deal.structure.prepay.pld_multiplier,
+        };
+      }
+      const res = await dealApi.runInline(dealToRun);
       setResult(res);
     } catch (e: any) {
       setError(e.message);
@@ -146,6 +205,38 @@ export default function App() {
   const loadDeal = useCallback(async (id: string) => {
     try {
       const d = await dealApi.getDeal(id);
+      // Ensure new fields exist for backward compat
+      if (!d.structure.prepay) {
+        d.structure.prepay = {
+          prepay_type: d.cpj?.enabled ? 'CPJ' : 'None',
+          speed: d.cpj?.cpj_speed ?? 15,
+          lockout_months: d.cpj?.lockout_months ?? 0,
+          pld_curve: d.cpj?.pld_curve ?? defaultPLD,
+          pld_multiplier: d.cpj?.pld_multiplier ?? 1.0,
+        };
+      }
+      // Migrate single loan to loans array
+      if (!d.loans || d.loans.length === 0) {
+        const baseLoan = d.loan || makeDefaultLoan();
+        if (!baseLoan.prepayment_penalty) baseLoan.prepayment_penalty = [];
+        if (!baseLoan.pricing_type) baseLoan.pricing_type = d.pricing?.pricing_type ?? 'Price';
+        if (baseLoan.pricing_input === undefined) baseLoan.pricing_input = d.pricing?.pricing_input ?? 100;
+        if (!baseLoan.settle_date) baseLoan.settle_date = d.pricing?.settle_date ?? '2026-03-03';
+        if (baseLoan.lp_amort_wam === undefined) baseLoan.lp_amort_wam = d.loan_pricing_profile?.amort_wam_override ?? null;
+        if (baseLoan.lp_balloon === undefined) baseLoan.lp_balloon = d.loan_pricing_profile?.balloon_override ?? null;
+        if (baseLoan.lp_io_period === undefined) baseLoan.lp_io_period = d.loan_pricing_profile?.io_period_override ?? null;
+        if (baseLoan.lp_wam === undefined) baseLoan.lp_wam = d.loan_pricing_profile?.wam_override ?? null;
+        d.loans = [baseLoan];
+        d.loan = baseLoan;
+      } else {
+        // Ensure per-loan fields exist
+        d.loans = d.loans.map((l: any) => ({
+          ...makeDefaultLoan(),
+          ...l,
+          prepayment_penalty: l.prepayment_penalty || [],
+        }));
+        d.loan = d.loans[0];
+      }
       setDeal(d);
       setResult(d.result || null);
     } catch (e: any) {
@@ -164,14 +255,34 @@ export default function App() {
     URL.revokeObjectURL(url);
   }, []);
 
-  const updateLoan = (field: string, value: any) => {
-    setDeal(d => ({ ...d, loan: { ...d.loan, [field]: value } }));
+  const updateLoan = (idx: number, field: string, value: any) => {
+    setDeal(d => {
+      const loans = [...d.loans];
+      loans[idx] = { ...loans[idx], [field]: value };
+      return { ...d, loans, loan: loans[0] };
+    });
+  };
+  const addLoan = () => {
+    setDeal(d => {
+      const newLoan = makeDefaultLoan();
+      return { ...d, loans: [...d.loans, newLoan] };
+    });
+  };
+  const removeLoan = (idx: number) => {
+    setDeal(d => {
+      if (d.loans.length <= 1) return d;
+      const loans = d.loans.filter((_, i) => i !== idx);
+      return { ...d, loans, loan: loans[0] };
+    });
   };
   const updatePricing = (field: string, value: any) => {
     setDeal(d => ({ ...d, pricing: { ...d.pricing, [field]: value } }));
   };
-  const updateCPJ = (field: string, value: any) => {
-    setDeal(d => ({ ...d, cpj: { ...d.cpj, [field]: value } }));
+  const updatePrepay = (field: string, value: any) => {
+    setDeal(d => ({
+      ...d,
+      structure: { ...d.structure, prepay: { ...d.structure.prepay, [field]: value } },
+    }));
   };
 
   const addClass = (type: 'SEQ' | 'PT' | 'IO') => {
@@ -221,14 +332,32 @@ export default function App() {
     });
   };
 
+  const handlePasteCurve = () => {
+    if (!pasteText.trim()) return;
+    const lines = pasteText.trim().split('\n');
+    const points = lines.map(line => {
+      const parts = line.split('\t');
+      if (parts.length < 2) return null;
+      const term = parseFloat(parts[0].trim());
+      const rate = parseFloat(parts[1].trim());
+      if (isNaN(term) || isNaN(rate)) return null;
+      return { term, rate };
+    }).filter((p): p is { term: number; rate: number } => p !== null);
+    if (points.length > 0) {
+      setDeal(d => ({ ...d, treasury_curve: { points } }));
+      setPasteText('');
+    }
+  };
+
   // Deal Arb computation
+  const totalFace = deal.loans.reduce((s, l) => s + l.original_face, 0);
   const dealArb = React.useMemo(() => {
     if (!result || !result.collateral_analytics) return null;
     const collat = result.collateral_analytics;
     const classes = deal.structure.classes.filter(c => c.class_type !== 'IO');
     if (classes.length === 0) return null;
 
-    const collatProceeds = (collat.price / 100) * deal.loan.original_face;
+    const collatProceeds = (collat.price / 100) * totalFace;
     let bondProceeds = 0;
     let weightedYield = 0;
     let totalBondBalance = 0;
@@ -242,12 +371,12 @@ export default function App() {
     }
 
     const arbDollar = bondProceeds - collatProceeds;
-    const arbPer100 = totalBondBalance > 0 ? (arbDollar / deal.loan.original_face) * 100 : 0;
+    const arbPer100 = totalBondBalance > 0 ? (arbDollar / totalFace) * 100 : 0;
     const avgBondYield = totalBondBalance > 0 ? weightedYield / totalBondBalance : 0;
     const yieldSpread = collat.yield_pct - avgBondYield;
 
     return { arbDollar, arbPer100, collatYield: collat.yield_pct, avgBondYield, yieldSpread, bondProceeds, collatProceeds };
-  }, [result, deal.structure.classes, deal.loan.original_face]);
+  }, [result, deal.structure.classes, totalFace]);
 
   return (
     <div style={{ fontFamily: 'system-ui, -apple-system, sans-serif', background: '#0f172a', color: '#e2e8f0', minHeight: '100vh' }}>
@@ -287,340 +416,531 @@ export default function App() {
         </div>
       )}
 
-      <div style={{ padding: '12px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* Tab Navigation */}
+      <div style={{ display: 'flex', gap: 0, padding: '0 24px', background: '#1e293b', borderBottom: '1px solid #334155' }}>
+        <button
+          onClick={() => setActiveTab('deal')}
+          style={{
+            ...tabStyle,
+            borderBottom: activeTab === 'deal' ? '2px solid #38bdf8' : '2px solid transparent',
+            color: activeTab === 'deal' ? '#38bdf8' : '#94a3b8',
+          }}
+        >Deal</button>
+        <button
+          onClick={() => setActiveTab('curve')}
+          style={{
+            ...tabStyle,
+            borderBottom: activeTab === 'curve' ? '2px solid #38bdf8' : '2px solid transparent',
+            color: activeTab === 'curve' ? '#38bdf8' : '#94a3b8',
+          }}
+        >Curve Data</button>
+      </div>
 
-        {/* ── COLLATERAL SECTION ── */}
-        <Section title="Collateral">
-          <div style={{ overflowX: 'auto' }}>
-            <table style={tableStyle}>
-              <thead>
-                <tr>
-                  <th style={thStyle}>Dated Date</th>
-                  <th style={thStyle}>1st Settle</th>
-                  <th style={thStyle}>Delay</th>
-                  <th style={thStyle}>Orig Face</th>
-                  <th style={thStyle}>Net Cpn</th>
-                  <th style={thStyle}>Gross WAC</th>
-                  <th style={thStyle}>WAM</th>
-                  <th style={thStyle}>Amort WAM</th>
-                  <th style={thStyle}>IO (mo)</th>
-                  <th style={thStyle}>Balloon</th>
-                  <th style={thStyle}>Seasoning</th>
-                  <th style={thStyle}>Lockout</th>
-                  {result && result.collateral_analytics && <>
-                    <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Price</th>
-                    <th style={thStyle}>Yield</th>
-                    <th style={thStyle}>J-Sprd</th>
-                    <th style={thStyle}>WAL</th>
-                    <th style={thStyle}>Mod Dur</th>
-                    <th style={thStyle}>Convx</th>
-                    <th style={thStyle}>Risk</th>
-                    <th style={thStyle}>Tsy@WAL</th>
-                  </>}
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td style={tdStyle}><input type="date" value={deal.loan.dated_date} onChange={e => updateLoan('dated_date', e.target.value)} style={{...inputStyle, width: 120}} /></td>
-                  <td style={tdStyle}><input type="date" value={deal.loan.first_settle} onChange={e => updateLoan('first_settle', e.target.value)} style={{...inputStyle, width: 120}} /></td>
-                  <td style={tdStyle}><input type="number" value={deal.loan.delay} onChange={e => updateLoan('delay', parseInt(e.target.value))} style={{...inputStyle, width: 50}} /></td>
-                  <td style={tdStyle}><input type="number" value={deal.loan.original_face} onChange={e => updateLoan('original_face', parseFloat(e.target.value))} style={{...inputStyle, width: 100}} /></td>
-                  <td style={tdStyle}><input type="number" step="0.0025" value={deal.loan.coupon_net} onChange={e => updateLoan('coupon_net', parseFloat(e.target.value))} style={{...inputStyle, width: 70}} /></td>
-                  <td style={tdStyle}><input type="number" step="0.0025" value={deal.loan.wac_gross} onChange={e => updateLoan('wac_gross', parseFloat(e.target.value))} style={{...inputStyle, width: 70}} /></td>
-                  <td style={tdStyle}><input type="number" value={deal.loan.wam} onChange={e => updateLoan('wam', parseInt(e.target.value))} style={{...inputStyle, width: 50}} /></td>
-                  <td style={tdStyle}><input type="number" value={deal.loan.amort_wam} onChange={e => updateLoan('amort_wam', parseInt(e.target.value))} style={{...inputStyle, width: 50}} /></td>
-                  <td style={tdStyle}><input type="number" value={deal.loan.io_period} onChange={e => updateLoan('io_period', parseInt(e.target.value))} style={{...inputStyle, width: 50}} /></td>
-                  <td style={tdStyle}><input type="number" value={deal.loan.balloon} onChange={e => updateLoan('balloon', parseInt(e.target.value))} style={{...inputStyle, width: 50}} /></td>
-                  <td style={tdStyle}><input type="number" value={deal.loan.seasoning} onChange={e => updateLoan('seasoning', parseInt(e.target.value))} style={{...inputStyle, width: 50}} /></td>
-                  <td style={tdStyle}><input type="number" value={deal.loan.lockout_months} onChange={e => updateLoan('lockout_months', parseInt(e.target.value))} style={{...inputStyle, width: 50}} /></td>
-                  {result && result.collateral_analytics && (() => {
-                    const a = result.collateral_analytics!;
-                    return <>
-                      <td style={{...tdStyleR, borderLeft: '2px solid #475569'}}>{a.price.toFixed(4)}</td>
-                      <td style={tdStyleR}>{a.yield_pct.toFixed(4)}</td>
-                      <td style={tdStyleR}>{a.j_spread.toFixed(1)}</td>
-                      <td style={tdStyleR}>{a.wal.toFixed(4)}</td>
-                      <td style={tdStyleR}>{a.modified_duration.toFixed(4)}</td>
-                      <td style={tdStyleR}>{a.convexity.toFixed(4)}</td>
-                      <td style={tdStyleR}>{a.risk_dpdy.toFixed(4)}</td>
-                      <td style={tdStyleR}>{a.tsy_rate_at_wal.toFixed(4)}</td>
-                    </>;
-                  })()}
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
-            Fee = {((deal.loan.wac_gross - deal.loan.coupon_net) * 10000).toFixed(0)} bp
-            &nbsp;|&nbsp; Term = {Math.floor(deal.loan.wam / 12)}yr {deal.loan.wam % 12}mo
-          </div>
-        </Section>
+      {/* ════════════════════ DEAL TAB ════════════════════ */}
+      {activeTab === 'deal' && (
+        <div style={{ padding: '12px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
 
-        {/* ── PRICING & TREASURY ── */}
-        <Section title="Pricing & Treasury Curve">
-          <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <label style={labelStyle}>Type</label>
-              <select value={deal.pricing.pricing_type} onChange={e => updatePricing('pricing_type', e.target.value)} style={{...inputStyle, width: 90}}>
-                <option value="Price">Price</option>
-                <option value="Yield">Yield</option>
-                <option value="JSpread">J-Spread</option>
-              </select>
-              <label style={labelStyle}>Input</label>
-              <input type="number" step="0.01" value={deal.pricing.pricing_input} onChange={e => updatePricing('pricing_input', parseFloat(e.target.value))} style={{...inputStyle, width: 80}} />
-              <label style={labelStyle}>Settle</label>
-              <input type="date" value={deal.pricing.settle_date} onChange={e => updatePricing('settle_date', e.target.value)} style={{...inputStyle, width: 120}} />
-              <label style={labelStyle}>Curve Dt</label>
-              <input type="date" value={deal.pricing.curve_date} onChange={e => updatePricing('curve_date', e.target.value)} style={{...inputStyle, width: 120}} />
+          {/* ── COLLATERAL SECTION ── */}
+          <Section title="Collateral">
+            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+              <button onClick={addLoan} style={btnSecondary}>+ Add Loan</button>
+              <span style={{ fontSize: 11, color: '#64748b', lineHeight: '28px' }}>
+                {deal.loans.length} loan{deal.loans.length > 1 ? 's' : ''} &bull; Total Face: {fmt(totalFace, 0)}
+              </span>
             </div>
-            <div style={{ display: 'flex', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 11, color: '#94a3b8', marginRight: 4 }}>Tsy:</span>
-              {deal.treasury_curve.points.map((p, i) => (
-                <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                  <span style={{ fontSize: 9, color: '#64748b' }}>{p.term < 1 ? `${(p.term * 12).toFixed(0)}m` : `${p.term}y`}</span>
-                  <input type="number" step="0.001" value={p.rate}
-                    onChange={e => {
-                      const pts = [...deal.treasury_curve.points];
-                      pts[i] = { ...pts[i], rate: parseFloat(e.target.value) };
-                      setDeal(d => ({ ...d, treasury_curve: { points: pts } }));
-                    }}
-                    style={{ ...inputStyle, width: 52, fontSize: 10, padding: '2px 3px', textAlign: 'center' as const }} />
-                </div>
-              ))}
-            </div>
-          </div>
-        </Section>
-
-        {/* ── CPJ SETTINGS ── */}
-        <Section title="CPJ Prepayment">
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
-              <input type="checkbox" checked={deal.cpj.enabled} onChange={e => updateCPJ('enabled', e.target.checked)} />
-              Enable
-            </label>
-            {deal.cpj.enabled && <>
-              <label style={labelStyle}>Speed</label>
-              <input type="number" value={deal.cpj.cpj_speed} onChange={e => updateCPJ('cpj_speed', parseFloat(e.target.value))} style={{...inputStyle, width: 60}} />
-              <label style={labelStyle}>Lockout</label>
-              <input type="number" value={deal.cpj.lockout_months} onChange={e => updateCPJ('lockout_months', parseInt(e.target.value))} style={{...inputStyle, width: 50}} />
-              <label style={labelStyle}>PLD Mult</label>
-              <input type="number" step="0.1" value={deal.cpj.pld_multiplier} onChange={e => updateCPJ('pld_multiplier', parseFloat(e.target.value))} style={{...inputStyle, width: 50}} />
-              <button onClick={() => setShowPLD(!showPLD)} style={btnSmall}>{showPLD ? 'Hide PLD' : 'PLD Curve'}</button>
-            </>}
-          </div>
-          {deal.cpj.enabled && showPLD && (
-            <div style={{ marginTop: 8, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-              {deal.cpj.pld_curve.map((e, i) => (
-                <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                  <span style={{ fontSize: 9, color: '#64748b' }}>{e.start_month}-{e.end_month}</span>
-                  <input type="number" step="0.001" value={e.annual_rate}
-                    onChange={ev => {
-                      const curve = [...deal.cpj.pld_curve];
-                      curve[i] = { ...curve[i], annual_rate: parseFloat(ev.target.value) };
-                      updateCPJ('pld_curve', curve);
-                    }}
-                    style={{ ...inputStyle, width: 60, fontSize: 10, padding: '2px 3px' }} />
-                </div>
-              ))}
-            </div>
-          )}
-          {/* Loan Pricing Profile */}
-          <div style={{ marginTop: 8, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
-              <input type="checkbox"
-                checked={deal.loan_pricing_profile !== null}
-                onChange={e => setDeal(d => ({
-                  ...d,
-                  loan_pricing_profile: e.target.checked
-                    ? { amort_wam_override: 480, balloon_override: 120, io_period_override: null, wam_override: null }
-                    : null,
-                }))}
-              />
-              Loan Pricing Override
-            </label>
-            {deal.loan_pricing_profile && <>
-              <label style={labelStyle}>Amort WAM</label>
-              <input type="number" value={deal.loan_pricing_profile.amort_wam_override ?? ''} onChange={e => setDeal(d => ({ ...d, loan_pricing_profile: { ...d.loan_pricing_profile!, amort_wam_override: e.target.value ? parseInt(e.target.value) : null } }))} style={{...inputStyle, width: 60}} />
-              <label style={labelStyle}>Balloon</label>
-              <input type="number" value={deal.loan_pricing_profile.balloon_override ?? ''} onChange={e => setDeal(d => ({ ...d, loan_pricing_profile: { ...d.loan_pricing_profile!, balloon_override: e.target.value ? parseInt(e.target.value) : null } }))} style={{...inputStyle, width: 60}} />
-              <label style={labelStyle}>IO Period</label>
-              <input type="number" value={deal.loan_pricing_profile.io_period_override ?? ''} onChange={e => setDeal(d => ({ ...d, loan_pricing_profile: { ...d.loan_pricing_profile!, io_period_override: e.target.value ? parseInt(e.target.value) : null } }))} style={{...inputStyle, width: 60}} />
-            </>}
-          </div>
-        </Section>
-
-        {/* ── BOND STRUCTURE ── */}
-        <Section title="Bond Structure">
-          <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
-            <button onClick={() => addClass('SEQ')} style={btnSecondary}>+ SEQ</button>
-            <button onClick={() => addClass('PT')} style={btnSecondary}>+ PT</button>
-            <button onClick={() => addClass('IO')} style={btnSecondary}>+ IO</button>
-            <span style={{ marginLeft: 16, fontSize: 12, color: '#94a3b8' }}>
-              PT Share: <input type="number" step="0.1" value={deal.structure.pt_share} onChange={e => setDeal(d => ({ ...d, structure: { ...d.structure, pt_share: parseFloat(e.target.value) } }))} style={{...inputStyle, width: 50}} />
-              &nbsp; Fee Rate: <input type="number" step="0.001" value={deal.structure.fee_rate} onChange={e => setDeal(d => ({ ...d, structure: { ...d.structure, fee_rate: parseFloat(e.target.value) } }))} style={{...inputStyle, width: 60}} />
-            </span>
-          </div>
-          {deal.structure.classes.length > 0 && (
             <div style={{ overflowX: 'auto' }}>
               <table style={tableStyle}>
                 <thead>
                   <tr>
                     <th style={thStyle}></th>
-                    <th style={thStyle}>ID</th>
-                    <th style={thStyle}>Type</th>
-                    <th style={thStyle}>Balance</th>
-                    <th style={thStyle}>Cpn Type</th>
-                    <th style={thStyle}>Rate</th>
-                    <th style={thStyle}>Rank</th>
-                    <th style={thStyle}>Pricing</th>
-                    <th style={thStyle}>Px Input</th>
-                    {result && Object.keys(result.bond_analytics).length > 0 && <>
+                    <th style={thStyle} colSpan={12}>Loan Details</th>
+                    <th style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={3}>Pricing</th>
+                    <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Penalty</th>
+                    <th style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={4}>LP Override</th>
+                    {result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (
+                      <th style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={8}>Analytics</th>
+                    )}
+                  </tr>
+                  <tr>
+                    <th style={thStyle}></th>
+                    <th style={thStyle}>Dated</th>
+                    <th style={thStyle}>1st Settle</th>
+                    <th style={thStyle}>Delay</th>
+                    <th style={thStyle}>Orig Face</th>
+                    <th style={thStyle}>Net Cpn</th>
+                    <th style={thStyle}>WAC</th>
+                    <th style={thStyle}>WAM</th>
+                    <th style={thStyle}>Amort</th>
+                    <th style={thStyle}>IO</th>
+                    <th style={thStyle}>Balloon</th>
+                    <th style={thStyle}>Season</th>
+                    <th style={thStyle}>Lock</th>
+                    <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Type</th>
+                    <th style={thStyle}>Input</th>
+                    <th style={thStyle}>Settle</th>
+                    <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Schedule</th>
+                    <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Amort</th>
+                    <th style={thStyle}>Blln</th>
+                    <th style={thStyle}>IO</th>
+                    <th style={thStyle}>WAM</th>
+                    {result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && <>
                       <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Price</th>
                       <th style={thStyle}>Yield</th>
                       <th style={thStyle}>J-Sprd</th>
                       <th style={thStyle}>WAL</th>
-                      <th style={thStyle}>Mod Dur</th>
-                      <th style={thStyle}>Convx</th>
+                      <th style={thStyle}>Dur</th>
+                      <th style={thStyle}>Cvx</th>
                       <th style={thStyle}>Risk</th>
+                      <th style={thStyle}>Tsy</th>
                     </>}
                   </tr>
                 </thead>
                 <tbody>
-                  {deal.structure.classes.map((cls, i) => {
-                    const ba = result?.bond_analytics[cls.class_id];
+                  {deal.loans.map((loan, i) => {
+                    const a = result?.per_loan_analytics?.[i];
                     return (
                       <tr key={i}>
                         <td style={tdStyle}>
-                          <button onClick={() => moveClass(i, -1)} style={btnMini}>^</button>
-                          <button onClick={() => moveClass(i, 1)} style={btnMini}>v</button>
-                          <button onClick={() => removeClass(i)} style={{...btnMini, color: '#f87171'}}>x</button>
+                          {deal.loans.length > 1 && <button onClick={() => removeLoan(i)} style={{...btnMini, color: '#f87171'}}>x</button>}
                         </td>
-                        <td style={tdStyle}><input value={cls.class_id} onChange={e => updateClass(i, 'class_id', e.target.value)} style={{...inputStyle, width: 70}} /></td>
-                        <td style={tdStyle}><span style={{ color: cls.class_type === 'SEQ' ? '#38bdf8' : cls.class_type === 'PT' ? '#a78bfa' : '#fbbf24', fontWeight: 600, fontSize: 11 }}>{cls.class_type}</span></td>
-                        <td style={tdStyle}>
-                          {cls.class_type !== 'IO' && <input type="number" value={cls.original_balance} onChange={e => updateClass(i, 'original_balance', parseFloat(e.target.value))} style={{...inputStyle, width: 90}} />}
+                        <td style={tdStyle}><input type="date" value={loan.dated_date} onChange={e => updateLoan(i, 'dated_date', e.target.value)} style={{...inputStyle, width: 120}} /></td>
+                        <td style={tdStyle}><input type="date" value={loan.first_settle} onChange={e => updateLoan(i, 'first_settle', e.target.value)} style={{...inputStyle, width: 120}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.delay} onChange={e => updateLoan(i, 'delay', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.original_face} onChange={e => updateLoan(i, 'original_face', parseFloat(e.target.value))} style={{...inputStyle, width: 90}} /></td>
+                        <td style={tdStyle}><input type="number" step="0.0025" value={loan.coupon_net} onChange={e => updateLoan(i, 'coupon_net', parseFloat(e.target.value))} style={{...inputStyle, width: 65}} /></td>
+                        <td style={tdStyle}><input type="number" step="0.0025" value={loan.wac_gross} onChange={e => updateLoan(i, 'wac_gross', parseFloat(e.target.value))} style={{...inputStyle, width: 65}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.wam} onChange={e => updateLoan(i, 'wam', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.amort_wam} onChange={e => updateLoan(i, 'amort_wam', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.io_period} onChange={e => updateLoan(i, 'io_period', parseInt(e.target.value))} style={{...inputStyle, width: 40}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.balloon} onChange={e => updateLoan(i, 'balloon', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.seasoning} onChange={e => updateLoan(i, 'seasoning', parseInt(e.target.value))} style={{...inputStyle, width: 40}} /></td>
+                        <td style={tdStyle}><input type="number" value={loan.lockout_months} onChange={e => updateLoan(i, 'lockout_months', parseInt(e.target.value))} style={{...inputStyle, width: 40}} /></td>
+                        {/* Pricing */}
+                        <td style={{...tdStyle, borderLeft: '2px solid #475569'}}>
+                          <select value={loan.pricing_type} onChange={e => updateLoan(i, 'pricing_type', e.target.value)} style={{...inputStyle, width: 70}}>
+                            <option value="Price">Price</option>
+                            <option value="Yield">Yield</option>
+                            <option value="JSpread">J-Sprd</option>
+                          </select>
                         </td>
-                        <td style={tdStyle}>
-                          {cls.class_type !== 'IO' && <select value={cls.coupon_type} onChange={e => updateClass(i, 'coupon_type', e.target.value)} style={{...inputStyle, width: 55}}><option value="FIX">FIX</option><option value="WAC">WAC</option></select>}
+                        <td style={tdStyle}><input type="number" step="0.01" value={loan.pricing_input} onChange={e => updateLoan(i, 'pricing_input', parseFloat(e.target.value))} style={{...inputStyle, width: 65}} /></td>
+                        <td style={tdStyle}><input type="date" value={loan.settle_date || ''} onChange={e => updateLoan(i, 'settle_date', e.target.value)} style={{...inputStyle, width: 120}} /></td>
+                        {/* Penalty */}
+                        <td style={{...tdStyle, borderLeft: '2px solid #475569'}}>
+                          <input type="text" placeholder="10-9-8..." value={penaltyToString(loan.prepayment_penalty)} onChange={e => updateLoan(i, 'prepayment_penalty', parsePenaltyString(e.target.value))} style={{...inputStyle, width: 100}} title={loan.prepayment_penalty.length > 0 ? `${loan.prepayment_penalty.length}-yr schedule` : 'No penalty'} />
                         </td>
-                        <td style={tdStyle}>
-                          {cls.class_type !== 'IO' && cls.coupon_type === 'FIX' && <input type="number" step="0.0025" value={cls.coupon_fix} onChange={e => updateClass(i, 'coupon_fix', parseFloat(e.target.value))} style={{...inputStyle, width: 70}} />}
-                          {cls.class_type !== 'IO' && cls.coupon_type === 'WAC' && <span style={{ color: '#a78bfa', fontSize: 11 }}>WAC</span>}
-                        </td>
-                        <td style={tdStyle}>{cls.class_type === 'SEQ' ? cls.priority_rank : '-'}</td>
-                        <td style={tdStyle}>
-                          {cls.class_type !== 'IO' && <select value={cls.pricing_type} onChange={e => updateClass(i, 'pricing_type', e.target.value)} style={{...inputStyle, width: 75}}><option value="Price">Price</option><option value="Yield">Yield</option><option value="JSpread">J-Sprd</option></select>}
-                        </td>
-                        <td style={tdStyle}>
-                          {cls.class_type !== 'IO' && <input type="number" step="0.01" value={cls.pricing_input} onChange={e => updateClass(i, 'pricing_input', parseFloat(e.target.value))} style={{...inputStyle, width: 70}} />}
-                        </td>
-                        {result && Object.keys(result.bond_analytics).length > 0 && (() => {
-                          if (!ba) return <td colSpan={7} style={tdStyle}>-</td>;
+                        {/* LP Override */}
+                        <td style={{...tdStyle, borderLeft: '2px solid #475569'}}><input type="number" value={loan.lp_amort_wam ?? ''} onChange={e => updateLoan(i, 'lp_amort_wam', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 45}} placeholder="-" /></td>
+                        <td style={tdStyle}><input type="number" value={loan.lp_balloon ?? ''} onChange={e => updateLoan(i, 'lp_balloon', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 45}} placeholder="-" /></td>
+                        <td style={tdStyle}><input type="number" value={loan.lp_io_period ?? ''} onChange={e => updateLoan(i, 'lp_io_period', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 40}} placeholder="-" /></td>
+                        <td style={tdStyle}><input type="number" value={loan.lp_wam ?? ''} onChange={e => updateLoan(i, 'lp_wam', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 45}} placeholder="-" /></td>
+                        {/* Analytics */}
+                        {result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (() => {
+                          if (!a) return <td colSpan={8} style={tdStyle}>-</td>;
                           return <>
-                            <td style={{...tdStyleR, borderLeft: '2px solid #475569'}}>{ba.price.toFixed(4)}</td>
-                            <td style={tdStyleR}>{ba.yield_pct.toFixed(4)}</td>
-                            <td style={tdStyleR}>{ba.j_spread.toFixed(1)}</td>
-                            <td style={tdStyleR}>{ba.wal.toFixed(4)}</td>
-                            <td style={tdStyleR}>{ba.modified_duration.toFixed(4)}</td>
-                            <td style={tdStyleR}>{ba.convexity.toFixed(4)}</td>
-                            <td style={tdStyleR}>{ba.risk_dpdy.toFixed(4)}</td>
+                            <td style={{...tdStyleR, borderLeft: '2px solid #475569'}}>{a.price.toFixed(4)}</td>
+                            <td style={tdStyleR}>{a.yield_pct.toFixed(4)}</td>
+                            <td style={tdStyleR}>{a.j_spread.toFixed(1)}</td>
+                            <td style={tdStyleR}>{a.wal.toFixed(4)}</td>
+                            <td style={tdStyleR}>{a.modified_duration.toFixed(4)}</td>
+                            <td style={tdStyleR}>{a.convexity.toFixed(4)}</td>
+                            <td style={tdStyleR}>{a.risk_dpdy.toFixed(4)}</td>
+                            <td style={tdStyleR}>{a.tsy_rate_at_wal.toFixed(4)}</td>
                           </>;
                         })()}
                       </tr>
                     );
                   })}
+                  {/* Aggregated total row */}
+                  {deal.loans.length > 1 && (
+                    <tr style={{ background: '#0f172a', fontWeight: 600 }}>
+                      <td style={tdStyle}></td>
+                      <td colSpan={3} style={{...tdStyle, color: '#38bdf8', fontSize: 11}}>TOTAL / WEIGHTED</td>
+                      <td style={tdStyleR}>{fmt(totalFace, 0)}</td>
+                      <td style={tdStyleR}>{totalFace > 0 ? (deal.loans.reduce((s, l) => s + l.original_face * l.coupon_net, 0) / totalFace).toFixed(4) : '-'}</td>
+                      <td style={tdStyleR}>{totalFace > 0 ? (deal.loans.reduce((s, l) => s + l.original_face * l.wac_gross, 0) / totalFace).toFixed(4) : '-'}</td>
+                      <td colSpan={6} style={tdStyle}></td>
+                      <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={3}></td>
+                      <td style={{...tdStyle, borderLeft: '2px solid #475569'}}></td>
+                      <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={4}></td>
+                      {result && result.collateral_analytics && (() => {
+                        const a = result.collateral_analytics!;
+                        return <>
+                          <td style={{...tdStyleR, borderLeft: '2px solid #475569', color: '#38bdf8'}}>{a.price.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.yield_pct.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.j_spread.toFixed(1)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.wal.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.modified_duration.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.convexity.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.risk_dpdy.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.tsy_rate_at_wal.toFixed(4)}</td>
+                        </>;
+                      })()}
+                      {result && (!result.collateral_analytics) && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (
+                        <td colSpan={8} style={{...tdStyle, borderLeft: '2px solid #475569'}}>-</td>
+                      )}
+                    </tr>
+                  )}
+                  {/* Single-loan aggregated analytics shown even for 1 loan */}
+                  {deal.loans.length === 1 && result && result.collateral_analytics && !result.per_loan_analytics?.length && (
+                    <tr style={{ background: '#0f172a' }}>
+                      <td colSpan={13} style={tdStyle}></td>
+                      <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={3}></td>
+                      <td style={{...tdStyle, borderLeft: '2px solid #475569'}}></td>
+                      <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={4}></td>
+                      {(() => {
+                        const a = result.collateral_analytics!;
+                        return <>
+                          <td style={{...tdStyleR, borderLeft: '2px solid #475569'}}>{a.price.toFixed(4)}</td>
+                          <td style={tdStyleR}>{a.yield_pct.toFixed(4)}</td>
+                          <td style={tdStyleR}>{a.j_spread.toFixed(1)}</td>
+                          <td style={tdStyleR}>{a.wal.toFixed(4)}</td>
+                          <td style={tdStyleR}>{a.modified_duration.toFixed(4)}</td>
+                          <td style={tdStyleR}>{a.convexity.toFixed(4)}</td>
+                          <td style={tdStyleR}>{a.risk_dpdy.toFixed(4)}</td>
+                          <td style={tdStyleR}>{a.tsy_rate_at_wal.toFixed(4)}</td>
+                        </>;
+                      })()}
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
-          )}
-          {deal.structure.classes.length === 0 && <p style={{ color: '#64748b', fontSize: 12, margin: 0 }}>No bonds. Add SEQ, PT, or IO classes above.</p>}
-        </Section>
-
-        {/* ── DEAL ARB SUMMARY ── */}
-        {dealArb && (
-          <Section title="Deal Arb / PnL Summary">
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-              <MetricCard label="Collateral Proceeds" value={`$${fmt(dealArb.collatProceeds, 0)}`} />
-              <MetricCard label="Bond Proceeds" value={`$${fmt(dealArb.bondProceeds, 0)}`} />
-              <MetricCard label="Deal Arb ($)" value={`$${fmt(dealArb.arbDollar, 0)}`} highlight={dealArb.arbDollar >= 0} />
-              <MetricCard label="Deal Arb (per 100)" value={dealArb.arbPer100.toFixed(4)} highlight={dealArb.arbPer100 >= 0} />
-              <MetricCard label="Collateral Yield" value={`${dealArb.collatYield.toFixed(4)}%`} />
-              <MetricCard label="Wtd Avg Bond Yield" value={`${dealArb.avgBondYield.toFixed(4)}%`} />
-              <MetricCard label="Yield Spread" value={`${(dealArb.yieldSpread * 100).toFixed(1)} bp`} highlight={dealArb.yieldSpread >= 0} />
+            <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
+              {deal.loans.length === 1 && <>
+                Fee = {((deal.loans[0].wac_gross - deal.loans[0].coupon_net) * 10000).toFixed(0)} bp
+                &nbsp;|&nbsp; Term = {Math.floor(deal.loans[0].wam / 12)}yr {deal.loans[0].wam % 12}mo
+              </>}
+              {deal.loans.length > 1 && <>
+                Loans: {deal.loans.length} &bull; Wtd Cpn: {totalFace > 0 ? ((deal.loans.reduce((s, l) => s + l.original_face * l.coupon_net, 0) / totalFace) * 100).toFixed(2) : '0'}%
+              </>}
             </div>
           </Section>
-        )}
 
-        {/* ── CHARTS (collapsible) ── */}
-        {result && (
-          <Section title="Charts" collapsible collapsed={!showCharts} onToggle={() => setShowCharts(!showCharts)}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-              <div>
-                <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#94a3b8' }}>Contractual Cashflows</h4>
-                <CashflowChart data={result.collateral_cashflows} />
+          {/* ── BOND STRUCTURE ── */}
+          <Section title="Bond Structure">
+            {/* Prepayment Assumption for Waterfall */}
+            <div style={{ marginBottom: 10, padding: '8px 10px', background: '#0f172a', borderRadius: 6, border: '1px solid #334155' }}>
+              <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6, fontStyle: 'italic' }}>
+                Prepayment Assumption (drives bond waterfall cashflow generation)
               </div>
-              {deal.cpj.enabled && (
-                <div>
-                  <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#94a3b8' }}>Bond Collateral (CPJ)</h4>
-                  <CashflowChart data={result.bond_collateral_cashflows} />
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                <label style={labelStyle}>Prepay Type</label>
+                <select
+                  value={deal.structure.prepay.prepay_type}
+                  onChange={e => updatePrepay('prepay_type', e.target.value as PrepaymentType)}
+                  style={{...inputStyle, width: 80}}
+                >
+                  <option value="None">None</option>
+                  <option value="CPJ">CPJ</option>
+                  <option value="CPR">CPR</option>
+                </select>
+                {deal.structure.prepay.prepay_type !== 'None' && <>
+                  <label style={labelStyle}>Speed</label>
+                  <input type="number" value={deal.structure.prepay.speed} onChange={e => updatePrepay('speed', parseFloat(e.target.value))} style={{...inputStyle, width: 60}} />
+                </>}
+                {deal.structure.prepay.prepay_type === 'CPJ' && <>
+                  <label style={labelStyle}>Lockout</label>
+                  <input type="number" value={deal.structure.prepay.lockout_months} onChange={e => updatePrepay('lockout_months', parseInt(e.target.value))} style={{...inputStyle, width: 50}} />
+                  <label style={labelStyle}>PLD Mult</label>
+                  <input type="number" step="0.1" value={deal.structure.prepay.pld_multiplier} onChange={e => updatePrepay('pld_multiplier', parseFloat(e.target.value))} style={{...inputStyle, width: 50}} />
+                  <button onClick={() => setShowPLD(!showPLD)} style={btnSmall}>{showPLD ? 'Hide PLD' : 'PLD Curve'}</button>
+                </>}
+              </div>
+              {deal.structure.prepay.prepay_type === 'CPJ' && showPLD && (
+                <div style={{ marginTop: 8, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                  {deal.structure.prepay.pld_curve.map((entry, i) => (
+                    <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                      <span style={{ fontSize: 9, color: '#64748b' }}>{entry.start_month}-{entry.end_month}</span>
+                      <input type="number" step="0.001" value={entry.annual_rate}
+                        onChange={ev => {
+                          const curve = [...deal.structure.prepay.pld_curve];
+                          curve[i] = { ...curve[i], annual_rate: parseFloat(ev.target.value) };
+                          updatePrepay('pld_curve', curve);
+                        }}
+                        style={{ ...inputStyle, width: 60, fontSize: 10, padding: '2px 3px' }} />
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
-            {Object.keys(result.bond_cashflows).length > 0 && (
-              <div style={{ marginTop: 16 }}>
-                <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#94a3b8' }}>Bond Cashflows</h4>
-                <BondCashflowChart data={result.bond_cashflows} />
+
+            <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+              <button onClick={() => addClass('SEQ')} style={btnSecondary}>+ SEQ</button>
+              <button onClick={() => addClass('PT')} style={btnSecondary}>+ PT</button>
+              <button onClick={() => addClass('IO')} style={btnSecondary}>+ IO</button>
+              <span style={{ marginLeft: 16, fontSize: 12, color: '#94a3b8' }}>
+                PT Share: <input type="number" step="0.1" value={deal.structure.pt_share} onChange={e => setDeal(d => ({ ...d, structure: { ...d.structure, pt_share: parseFloat(e.target.value) } }))} style={{...inputStyle, width: 50}} />
+                &nbsp; Fee Rate: <input type="number" step="0.001" value={deal.structure.fee_rate} onChange={e => setDeal(d => ({ ...d, structure: { ...d.structure, fee_rate: parseFloat(e.target.value) } }))} style={{...inputStyle, width: 60}} />
+              </span>
+            </div>
+            {deal.structure.classes.length > 0 && (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={tableStyle}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}></th>
+                      <th style={thStyle}>ID</th>
+                      <th style={thStyle}>Type</th>
+                      <th style={thStyle}>Balance</th>
+                      <th style={thStyle}>Cpn Type</th>
+                      <th style={thStyle}>Rate</th>
+                      <th style={thStyle}>Rank</th>
+                      <th style={thStyle}>Pricing</th>
+                      <th style={thStyle}>Px Input</th>
+                      {result && Object.keys(result.bond_analytics).length > 0 && <>
+                        <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Price</th>
+                        <th style={thStyle}>Yield</th>
+                        <th style={thStyle}>J-Sprd</th>
+                        <th style={thStyle}>WAL</th>
+                        <th style={thStyle}>Mod Dur</th>
+                        <th style={thStyle}>Convx</th>
+                        <th style={thStyle}>Risk</th>
+                      </>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deal.structure.classes.map((cls, i) => {
+                      const ba = result?.bond_analytics[cls.class_id];
+                      return (
+                        <tr key={i}>
+                          <td style={tdStyle}>
+                            <button onClick={() => moveClass(i, -1)} style={btnMini}>^</button>
+                            <button onClick={() => moveClass(i, 1)} style={btnMini}>v</button>
+                            <button onClick={() => removeClass(i)} style={{...btnMini, color: '#f87171'}}>x</button>
+                          </td>
+                          <td style={tdStyle}><input value={cls.class_id} onChange={e => updateClass(i, 'class_id', e.target.value)} style={{...inputStyle, width: 70}} /></td>
+                          <td style={tdStyle}><span style={{ color: cls.class_type === 'SEQ' ? '#38bdf8' : cls.class_type === 'PT' ? '#a78bfa' : '#fbbf24', fontWeight: 600, fontSize: 11 }}>{cls.class_type}</span></td>
+                          <td style={tdStyle}>
+                            {cls.class_type !== 'IO' && <input type="number" value={cls.original_balance} onChange={e => updateClass(i, 'original_balance', parseFloat(e.target.value))} style={{...inputStyle, width: 90}} />}
+                          </td>
+                          <td style={tdStyle}>
+                            {cls.class_type !== 'IO' && <select value={cls.coupon_type} onChange={e => updateClass(i, 'coupon_type', e.target.value)} style={{...inputStyle, width: 55}}><option value="FIX">FIX</option><option value="WAC">WAC</option></select>}
+                          </td>
+                          <td style={tdStyle}>
+                            {cls.class_type !== 'IO' && cls.coupon_type === 'FIX' && <input type="number" step="0.0025" value={cls.coupon_fix} onChange={e => updateClass(i, 'coupon_fix', parseFloat(e.target.value))} style={{...inputStyle, width: 70}} />}
+                            {cls.class_type !== 'IO' && cls.coupon_type === 'WAC' && <span style={{ color: '#a78bfa', fontSize: 11 }}>WAC</span>}
+                          </td>
+                          <td style={tdStyle}>{cls.class_type === 'SEQ' ? cls.priority_rank : '-'}</td>
+                          <td style={tdStyle}>
+                            {cls.class_type !== 'IO' && <select value={cls.pricing_type} onChange={e => updateClass(i, 'pricing_type', e.target.value)} style={{...inputStyle, width: 75}}><option value="Price">Price</option><option value="Yield">Yield</option><option value="JSpread">J-Sprd</option></select>}
+                          </td>
+                          <td style={tdStyle}>
+                            {cls.class_type !== 'IO' && <input type="number" step="0.01" value={cls.pricing_input} onChange={e => updateClass(i, 'pricing_input', parseFloat(e.target.value))} style={{...inputStyle, width: 70}} />}
+                          </td>
+                          {result && Object.keys(result.bond_analytics).length > 0 && (() => {
+                            if (!ba) return <td colSpan={7} style={tdStyle}>-</td>;
+                            return <>
+                              <td style={{...tdStyleR, borderLeft: '2px solid #475569'}}>{ba.price.toFixed(4)}</td>
+                              <td style={tdStyleR}>{ba.yield_pct.toFixed(4)}</td>
+                              <td style={tdStyleR}>{ba.j_spread.toFixed(1)}</td>
+                              <td style={tdStyleR}>{ba.wal.toFixed(4)}</td>
+                              <td style={tdStyleR}>{ba.modified_duration.toFixed(4)}</td>
+                              <td style={tdStyleR}>{ba.convexity.toFixed(4)}</td>
+                              <td style={tdStyleR}>{ba.risk_dpdy.toFixed(4)}</td>
+                            </>;
+                          })()}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
+            {deal.structure.classes.length === 0 && <p style={{ color: '#64748b', fontSize: 12, margin: 0 }}>No bonds. Add SEQ, PT, or IO classes above.</p>}
           </Section>
-        )}
 
-        {/* ── COLLATERAL CASHFLOW TABLE (collapsible) ── */}
-        {result && (
-          <Section title="Collateral Cashflow Table" collapsible collapsed={!showCashflows} onToggle={() => setShowCashflows(!showCashflows)}>
-            <div style={{ maxHeight: 400, overflow: 'auto' }}>
-              <table style={tableStyle}>
-                <thead>
-                  <tr>
-                    <th style={thStyle}>Mo</th><th style={thStyle}>Date</th><th style={thStyle}>CF Date</th>
-                    <th style={thStyle}>YrFrac</th><th style={thStyle}>Beg Bal</th><th style={thStyle}>Pmt Agy</th>
-                    <th style={thStyle}>Int Inv</th><th style={thStyle}>Int Agy</th><th style={thStyle}>Reg Prn</th>
-                    <th style={thStyle}>Balloon</th><th style={thStyle}>End Bal</th><th style={thStyle}>Net Prn</th>
-                    <th style={thStyle}>Net Flow</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.collateral_cashflows.map(cf => (
-                    <tr key={cf.month}>
-                      <td style={tdStyle}>{cf.month}</td>
-                      <td style={tdStyle}>{serialToDate(cf.date_serial)}</td>
-                      <td style={tdStyle}>{serialToDate(cf.cf_date_serial)}</td>
-                      <td style={tdStyle}>{cf.year_frac.toFixed(4)}</td>
-                      <td style={tdStyleR}>{fmt(cf.beg_bal)}</td>
-                      <td style={tdStyleR}>{fmt(cf.pmt_to_agy)}</td>
-                      <td style={tdStyleR}>{fmt(cf.int_to_inv)}</td>
-                      <td style={tdStyleR}>{fmt(cf.int_to_agy)}</td>
-                      <td style={tdStyleR}>{fmt(cf.reg_prn)}</td>
-                      <td style={tdStyleR}>{fmt(cf.balloon_pay)}</td>
-                      <td style={tdStyleR}>{fmt(cf.end_bal)}</td>
-                      <td style={tdStyleR}>{fmt(cf.net_prn)}</td>
-                      <td style={tdStyleR}>{fmt(cf.net_flow)}</td>
+          {/* ── DEAL ARB SUMMARY ── */}
+          {dealArb && (
+            <Section title="Deal Arb / PnL Summary">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+                <MetricCard label="Collateral Proceeds" value={`$${fmt(dealArb.collatProceeds, 0)}`} />
+                <MetricCard label="Bond Proceeds" value={`$${fmt(dealArb.bondProceeds, 0)}`} />
+                <MetricCard label="Deal Arb ($)" value={`$${fmt(dealArb.arbDollar, 0)}`} highlight={dealArb.arbDollar >= 0} />
+                <MetricCard label="Deal Arb (per 100)" value={dealArb.arbPer100.toFixed(4)} highlight={dealArb.arbPer100 >= 0} />
+                <MetricCard label="Collateral Yield" value={`${dealArb.collatYield.toFixed(4)}%`} />
+                <MetricCard label="Wtd Avg Bond Yield" value={`${dealArb.avgBondYield.toFixed(4)}%`} />
+                <MetricCard label="Yield Spread" value={`${(dealArb.yieldSpread * 100).toFixed(1)} bp`} highlight={dealArb.yieldSpread >= 0} />
+              </div>
+            </Section>
+          )}
+
+          {/* ── CHARTS (collapsible) ── */}
+          {result && (
+            <Section title="Charts" collapsible collapsed={!showCharts} onToggle={() => setShowCharts(!showCharts)}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                <div>
+                  <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#94a3b8' }}>Contractual Cashflows</h4>
+                  <CashflowChart data={result.collateral_cashflows} />
+                </div>
+                {prepayActive && (
+                  <div>
+                    <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#94a3b8' }}>Bond Collateral (with Prepay)</h4>
+                    <CashflowChart data={result.bond_collateral_cashflows} />
+                  </div>
+                )}
+              </div>
+              {Object.keys(result.bond_cashflows).length > 0 && (
+                <div style={{ marginTop: 16 }}>
+                  <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#94a3b8' }}>Bond Cashflows</h4>
+                  <BondCashflowChart data={result.bond_cashflows} />
+                </div>
+              )}
+            </Section>
+          )}
+
+          {/* ── COLLATERAL CASHFLOW TABLE (collapsible) ── */}
+          {result && (
+            <Section title="Collateral Cashflow Table" collapsible collapsed={!showCashflows} onToggle={() => setShowCashflows(!showCashflows)}>
+              <div style={{ maxHeight: 400, overflow: 'auto' }}>
+                <table style={tableStyle}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Mo</th><th style={thStyle}>Date</th><th style={thStyle}>CF Date</th>
+                      <th style={thStyle}>YrFrac</th><th style={thStyle}>Beg Bal</th><th style={thStyle}>Pmt Agy</th>
+                      <th style={thStyle}>Int Inv</th><th style={thStyle}>Int Agy</th><th style={thStyle}>Reg Prn</th>
+                      <th style={thStyle}>Balloon</th><th style={thStyle}>End Bal</th><th style={thStyle}>Net Prn</th>
+                      <th style={thStyle}>Net Flow</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <button onClick={() => exportCSV(result.collateral_cashflows, 'collateral_cashflows.csv')} style={{ ...btnSmall, marginTop: 8 }}>Export CSV</button>
-          </Section>
-        )}
+                  </thead>
+                  <tbody>
+                    {result.collateral_cashflows.map(cf => (
+                      <tr key={cf.month}>
+                        <td style={tdStyle}>{cf.month}</td>
+                        <td style={tdStyle}>{serialToDate(cf.date_serial)}</td>
+                        <td style={tdStyle}>{serialToDate(cf.cf_date_serial)}</td>
+                        <td style={tdStyle}>{cf.year_frac.toFixed(4)}</td>
+                        <td style={tdStyleR}>{fmt(cf.beg_bal)}</td>
+                        <td style={tdStyleR}>{fmt(cf.pmt_to_agy)}</td>
+                        <td style={tdStyleR}>{fmt(cf.int_to_inv)}</td>
+                        <td style={tdStyleR}>{fmt(cf.int_to_agy)}</td>
+                        <td style={tdStyleR}>{fmt(cf.reg_prn)}</td>
+                        <td style={tdStyleR}>{fmt(cf.balloon_pay)}</td>
+                        <td style={tdStyleR}>{fmt(cf.end_bal)}</td>
+                        <td style={tdStyleR}>{fmt(cf.net_prn)}</td>
+                        <td style={tdStyleR}>{fmt(cf.net_flow)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <button onClick={() => exportCSV(result.collateral_cashflows, 'collateral_cashflows.csv')} style={{ ...btnSmall, marginTop: 8 }}>Export CSV</button>
+            </Section>
+          )}
 
-        {/* ── DEAL CASHFLOW TABLE ── */}
-        {result && Object.keys(result.bond_cashflows).length > 0 && (
-          <Section title="Deal Cashflows (Collateral + Bonds)" collapsible collapsed={!showDealCashflows} onToggle={() => setShowDealCashflows(!showDealCashflows)}>
-            <DealCashflowTable result={result} classes={deal.structure.classes} exportCSV={exportCSV} />
+          {/* ── DEAL CASHFLOW TABLE ── */}
+          {result && Object.keys(result.bond_cashflows).length > 0 && (
+            <Section title="Deal Cashflows (Collateral + Bonds)" collapsible collapsed={!showDealCashflows} onToggle={() => setShowDealCashflows(!showDealCashflows)}>
+              <DealCashflowTable result={result} classes={deal.structure.classes} exportCSV={exportCSV} />
+            </Section>
+          )}
+        </div>
+      )}
+
+      {/* ════════════════════ CURVE DATA TAB ════════════════════ */}
+      {activeTab === 'curve' && (
+        <div style={{ padding: '12px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <Section title="Curve Data">
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+              <label style={labelStyle}>Curve Date</label>
+              <input type="date" value={deal.pricing.curve_date} onChange={e => updatePricing('curve_date', e.target.value)} style={{...inputStyle, width: 130}} />
+            </div>
+
+            {/* Treasury Curve Grid */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <h4 style={{ margin: 0, fontSize: 13, color: '#94a3b8' }}>Treasury Curve</h4>
+                <button
+                  onClick={() => {
+                    const pts = [...deal.treasury_curve.points, { term: 0, rate: 0 }];
+                    setDeal(d => ({ ...d, treasury_curve: { points: pts } }));
+                  }}
+                  style={btnSmall}
+                >+ Add Point</button>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={tableStyle}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Tenor (yrs)</th>
+                      <th style={thStyle}>Label</th>
+                      <th style={thStyle}>Rate (%)</th>
+                      <th style={thStyle}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deal.treasury_curve.points.map((p, i) => (
+                      <tr key={i}>
+                        <td style={tdStyle}>
+                          <input
+                            type="number"
+                            step="0.0833"
+                            value={p.term}
+                            onChange={e => {
+                              const pts = [...deal.treasury_curve.points];
+                              pts[i] = { ...pts[i], term: parseFloat(e.target.value) };
+                              setDeal(d => ({ ...d, treasury_curve: { points: pts } }));
+                            }}
+                            style={{...inputStyle, width: 80}}
+                          />
+                        </td>
+                        <td style={{...tdStyle, color: '#64748b', fontSize: 10}}>{termLabel(p.term)}</td>
+                        <td style={tdStyle}>
+                          <input
+                            type="number"
+                            step="0.001"
+                            value={p.rate}
+                            onChange={e => {
+                              const pts = [...deal.treasury_curve.points];
+                              pts[i] = { ...pts[i], rate: parseFloat(e.target.value) };
+                              setDeal(d => ({ ...d, treasury_curve: { points: pts } }));
+                            }}
+                            style={{...inputStyle, width: 80}}
+                          />
+                        </td>
+                        <td style={tdStyle}>
+                          <button
+                            onClick={() => {
+                              const pts = deal.treasury_curve.points.filter((_, j) => j !== i);
+                              setDeal(d => ({ ...d, treasury_curve: { points: pts } }));
+                            }}
+                            style={{...btnMini, color: '#f87171'}}
+                          >x</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Paste Curve Data */}
+            <div style={{ padding: '10px', background: '#0f172a', borderRadius: 6, border: '1px solid #334155' }}>
+              <h4 style={{ margin: '0 0 6px', fontSize: 13, color: '#94a3b8' }}>Paste Curve Data</h4>
+              <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6 }}>
+                Paste tab-separated data: Tenor(yrs)&#9;Rate(%) — one point per line
+              </div>
+              <textarea
+                value={pasteText}
+                onChange={e => setPasteText(e.target.value)}
+                placeholder={"0.0833\t3.564\n0.25\t3.682\n1\t3.564\n2\t3.513\n5\t3.649\n10\t4.07\n30\t4.716"}
+                style={{
+                  ...inputStyle,
+                  width: '100%',
+                  height: 120,
+                  resize: 'vertical' as const,
+                  fontFamily: 'monospace',
+                  fontSize: 11,
+                  whiteSpace: 'pre' as const,
+                }}
+              />
+              <button onClick={handlePasteCurve} style={{...btnSecondary, marginTop: 6}}>
+                Apply Pasted Data
+              </button>
+            </div>
           </Section>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -672,6 +992,7 @@ function DealCashflowTable({ result, classes, exportCSV }: {
       row[`${bid}_int`] = bcf?.interest_paid ?? 0;
       row[`${bid}_prn`] = bcf?.principal_paid ?? 0;
       row[`${bid}_end`] = bcf?.end_bal ?? 0;
+      row[`${bid}_penalty`] = bcf?.penalty_income ?? 0;
     }
     return row;
   });
@@ -686,14 +1007,14 @@ function DealCashflowTable({ result, classes, exportCSV }: {
               <th style={thStyle} rowSpan={2}>Date</th>
               <th style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={4}>Collateral</th>
               {bondIds.map(bid => (
-                <th key={bid} style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={4}>{bid}</th>
+                <th key={bid} style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={5}>{bid}</th>
               ))}
             </tr>
             <tr>
               <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Beg Bal</th><th style={thStyle}>Interest</th><th style={thStyle}>Principal</th><th style={thStyle}>End Bal</th>
               {bondIds.map(bid => (
                 <React.Fragment key={bid}>
-                  <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Beg Bal</th><th style={thStyle}>Int Paid</th><th style={thStyle}>Prin Paid</th><th style={thStyle}>End Bal</th>
+                  <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Beg Bal</th><th style={thStyle}>Int Paid</th><th style={thStyle}>Prin Paid</th><th style={thStyle}>End Bal</th><th style={thStyle}>Penalty</th>
                 </React.Fragment>
               ))}
             </tr>
@@ -713,6 +1034,7 @@ function DealCashflowTable({ result, classes, exportCSV }: {
                     <td style={tdStyleR}>{fmt(r[`${bid}_int`])}</td>
                     <td style={tdStyleR}>{fmt(r[`${bid}_prn`])}</td>
                     <td style={tdStyleR}>{fmt(r[`${bid}_end`])}</td>
+                    <td style={tdStyleR}>{fmt(r[`${bid}_penalty`])}</td>
                   </React.Fragment>
                 ))}
               </tr>
@@ -764,4 +1086,8 @@ const btnSmall: React.CSSProperties = {
 };
 const btnMini: React.CSSProperties = {
   background: 'transparent', color: '#94a3b8', border: 'none', cursor: 'pointer', fontSize: 10, padding: '0 2px',
+};
+const tabStyle: React.CSSProperties = {
+  background: 'transparent', border: 'none', color: '#94a3b8', padding: '8px 16px',
+  cursor: 'pointer', fontSize: 13, fontWeight: 500,
 };

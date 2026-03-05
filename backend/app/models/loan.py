@@ -26,8 +26,14 @@ class PricingType(str, Enum):
     JSPREAD = "JSpread"
 
 
+class PrepaymentType(str, Enum):
+    NONE = "None"
+    CPJ = "CPJ"
+    CPR = "CPR"
+
+
 class LoanInput(BaseModel):
-    """Mirrors Excel workbook input cells exactly."""
+    """Loan-level input with per-loan pricing and override fields."""
 
     dated_date: date = Field(description="Dated date (Excel F8)")
     first_settle: date = Field(description="First settlement date (Excel F9)")
@@ -41,6 +47,21 @@ class LoanInput(BaseModel):
     balloon: int = Field(default=120, description="Balloon month (Excel F18)")
     seasoning: int = Field(default=0, description="Seasoning months (Excel F19)")
     lockout_months: int = Field(default=0, description="Lockout months for CPJ")
+    prepayment_penalty: list[float] = Field(
+        default_factory=list,
+        description="Declining annual penalty schedule, e.g. [10,9,8,7,6,5,4,3,2,1]",
+    )
+
+    # Per-loan pricing assumptions (for collateral analytics)
+    pricing_type: PricingType = PricingType.PRICE
+    pricing_input: float = Field(default=100.0, description="Price or yield input")
+    settle_date: Optional[date] = Field(None, description="Settlement date (per-loan)")
+
+    # Per-loan pricing overrides (for loan pricing analytics, not waterfall)
+    lp_amort_wam: Optional[int] = Field(None, description="Loan pricing: override amort WAM")
+    lp_balloon: Optional[int] = Field(None, description="Loan pricing: override balloon")
+    lp_io_period: Optional[int] = Field(None, description="Loan pricing: override IO period")
+    lp_wam: Optional[int] = Field(None, description="Loan pricing: override WAM")
 
 
 class LoanPricingProfile(BaseModel):
@@ -86,6 +107,16 @@ class CPJInput(BaseModel):
     pld_multiplier: float = Field(default=1.0, description="PLD curve multiplier")
 
 
+class PrepaymentAssumption(BaseModel):
+    """Prepayment assumption for bond waterfall cashflow generation."""
+
+    prepay_type: PrepaymentType = PrepaymentType.NONE
+    speed: float = Field(default=15.0, description="CPJ speed or CPR in %")
+    lockout_months: int = Field(default=0, description="Lockout months (CPJ only)")
+    pld_curve: list[PLDCurveEntry] = Field(default_factory=list)
+    pld_multiplier: float = Field(default=1.0, description="PLD curve multiplier (CPJ only)")
+
+
 class BondClass(BaseModel):
     class_id: str
     class_type: BondClassType
@@ -103,6 +134,7 @@ class DealStructure(BaseModel):
     classes: list[BondClass] = []
     pt_share: float = Field(default=0.0, ge=0.0, le=1.0)
     fee_rate: float = Field(default=0.0, description="Annual fee rate on collateral balance")
+    prepay: PrepaymentAssumption = PrepaymentAssumption()
 
 
 class CashflowRow(BaseModel):
@@ -147,13 +179,16 @@ class BondCashflowRow(BaseModel):
     principal_paid: float = 0.0
     end_bal: float = 0.0
     coupon_rate: float = 0.0
+    penalty_income: float = 0.0
 
 
 class DealResult(BaseModel):
     collateral_cashflows: list[CashflowRow] = []
     collateral_analytics: Optional[AnalyticsOutput] = None
+    per_loan_analytics: list[Optional[AnalyticsOutput]] = []
     loan_pricing_cashflows: list[CashflowRow] = []
     loan_pricing_analytics: Optional[AnalyticsOutput] = None
+    per_loan_pricing_analytics: list[Optional[AnalyticsOutput]] = []
     bond_collateral_cashflows: list[CashflowRow] = []
     bond_cashflows: dict[str, list[BondCashflowRow]] = {}
     bond_analytics: dict[str, AnalyticsOutput] = {}
@@ -163,10 +198,19 @@ class DealResult(BaseModel):
 class Deal(BaseModel):
     deal_id: str = ""
     deal_name: str = ""
-    loan: LoanInput
+    loans: list[LoanInput] = []
+    loan: Optional[LoanInput] = None  # backward compat
     pricing: PricingInput
     treasury_curve: TreasuryCurve = TreasuryCurve()
-    loan_pricing_profile: Optional[LoanPricingProfile] = None
+    loan_pricing_profile: Optional[LoanPricingProfile] = None  # backward compat
     cpj: CPJInput = CPJInput()
     structure: DealStructure = DealStructure()
     result: Optional[DealResult] = None
+
+    def get_loans(self) -> list[LoanInput]:
+        """Resolve loans list with backward compatibility."""
+        if self.loans:
+            return self.loans
+        if self.loan:
+            return [self.loan]
+        return []

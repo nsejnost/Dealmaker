@@ -11,6 +11,16 @@ export interface LoanInput {
   balloon: number;
   seasoning: number;
   lockout_months: number;
+  prepayment_penalty: number[];
+  // Per-loan pricing
+  pricing_type: 'Price' | 'Yield' | 'JSpread';
+  pricing_input: number;
+  settle_date: string | null;
+  // Per-loan pricing overrides
+  lp_amort_wam: number | null;
+  lp_balloon: number | null;
+  lp_io_period: number | null;
+  lp_wam: number | null;
 }
 
 export interface LoanPricingProfile {
@@ -50,6 +60,16 @@ export interface CPJInput {
   pld_multiplier: number;
 }
 
+export type PrepaymentType = 'None' | 'CPJ' | 'CPR';
+
+export interface PrepaymentAssumption {
+  prepay_type: PrepaymentType;
+  speed: number;
+  lockout_months: number;
+  pld_curve: PLDCurveEntry[];
+  pld_multiplier: number;
+}
+
 export interface BondClass {
   class_id: string;
   class_type: 'SEQ' | 'PT' | 'IO';
@@ -67,6 +87,7 @@ export interface DealStructure {
   classes: BondClass[];
   pt_share: number;
   fee_rate: number;
+  prepay: PrepaymentAssumption;
 }
 
 export interface CashflowRow {
@@ -110,13 +131,16 @@ export interface BondCashflowRow {
   principal_paid: number;
   end_bal: number;
   coupon_rate: number;
+  penalty_income: number;
 }
 
 export interface DealResult {
   collateral_cashflows: CashflowRow[];
   collateral_analytics: AnalyticsOutput | null;
+  per_loan_analytics: (AnalyticsOutput | null)[];
   loan_pricing_cashflows: CashflowRow[];
   loan_pricing_analytics: AnalyticsOutput | null;
+  per_loan_pricing_analytics: (AnalyticsOutput | null)[];
   bond_collateral_cashflows: CashflowRow[];
   bond_cashflows: Record<string, BondCashflowRow[]>;
   bond_analytics: Record<string, AnalyticsOutput>;
@@ -126,7 +150,8 @@ export interface DealResult {
 export interface Deal {
   deal_id: string;
   deal_name: string;
-  loan: LoanInput;
+  loans: LoanInput[];
+  loan: LoanInput;  // backward compat
   pricing: PricingInput;
   treasury_curve: TreasuryCurve;
   loan_pricing_profile: LoanPricingProfile | null;

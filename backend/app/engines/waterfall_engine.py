@@ -46,10 +46,27 @@ def compute_pool_wac(
     return weighted / total_bal
 
 
+def _get_penalty_rate(loan: LoanInput, month: int) -> float:
+    """Get the prepayment penalty rate for a given month.
+
+    The penalty schedule is an annual step-down, e.g. [10,9,8,7,6,5,4,3,2,1]
+    means 10% in year 1, 9% in year 2, etc.
+    """
+    if not loan.prepayment_penalty:
+        return 0.0
+    # Loan year (0-indexed): year 0 = months 1-12, year 1 = months 13-24, etc.
+    age = loan.seasoning + month
+    year_idx = max(0, (age - 1)) // 12
+    if year_idx < len(loan.prepayment_penalty):
+        return loan.prepayment_penalty[year_idx]
+    return 0.0
+
+
 def run_waterfall(
     collateral_cashflows: list[CashflowRow],
     structure: DealStructure,
     loans: list[LoanInput],
+    per_loan_bond_cfs: list[list[CashflowRow]] | None = None,
 ) -> dict[str, list[BondCashflowRow]]:
     """Run the full waterfall producing bond-level cashflows.
 
@@ -77,9 +94,15 @@ def run_waterfall(
 
     result: dict[str, list[BondCashflowRow]] = {c.class_id: [] for c in classes}
 
-    # Track collateral balances for WAC computation
-    # For single-loan MVP, loan balance tracks from cashflows
+    # Track per-loan balances for WAC computation and penalties
+    loan_balances = [l.original_face for l in loans]
     collat_bal = collateral_cashflows[0].beg_bal if collateral_cashflows else 0.0
+
+    # Index per-loan cashflows by month for penalty computation
+    per_loan_by_month: list[dict[int, CashflowRow]] = []
+    if per_loan_bond_cfs:
+        for cfs in per_loan_bond_cfs:
+            per_loan_by_month.append({row.month: row for row in cfs})
 
     for cf in collateral_cashflows:
         month = cf.month
@@ -96,9 +119,7 @@ def run_waterfall(
         net_interest = max(0.0, collat_interest - fees)
 
         # Compute pool WAC for this month (for WAC coupon classes)
-        # For single loan: WAC = coupon_net
-        pool_wac = loans[0].coupon_net if loans else 0.0
-        # For multi-loan: would compute from remaining balances
+        pool_wac = compute_pool_wac(loans, loan_balances)
 
         # Interest waterfall
         interest_rem = net_interest
@@ -174,8 +195,47 @@ def run_waterfall(
             entry.end_bal = cls_bal - cls_prin
             bond_bals[cls.class_id] = entry.end_bal
 
+        # Prepayment penalty income (sum across loans)
+        penalty = 0.0
+        if per_loan_by_month and loans:
+            for i, loan in enumerate(loans):
+                if i < len(per_loan_by_month) and month in per_loan_by_month[i]:
+                    loan_cf = per_loan_by_month[i][month]
+                    if loan_cf.unsched_prn > 0:
+                        rate = _get_penalty_rate(loan, month)
+                        penalty += loan_cf.unsched_prn * rate / 100.0
+        elif cf.unsched_prn > 0 and loans:
+            # Fallback: single-loan or no per-loan data
+            penalty_rate = _get_penalty_rate(loans[0], month)
+            penalty = cf.unsched_prn * penalty_rate / 100.0
+
+        if penalty > 0:
+            if io_classes:
+                # All penalty income goes to IO class
+                for cls in io_classes:
+                    entry = result[cls.class_id][-1]
+                    entry.penalty_income = penalty
+            else:
+                # Distribute pro-rata to all bond classes as excess cashflow
+                total_bal = sum(bond_bals[c.class_id] for c in seq_classes + pt_classes)
+                for cls in seq_classes + pt_classes:
+                    entry = result[cls.class_id][-1]
+                    if total_bal > 0:
+                        share = bond_bals[cls.class_id] / total_bal
+                    else:
+                        share = 1.0 / max(1, len(seq_classes) + len(pt_classes))
+                    entry.penalty_income = penalty * share
+
         # Update collateral balance for next period
         collat_bal = cf.end_bal
+
+        # Update per-loan balances for WAC computation
+        if per_loan_by_month:
+            for i in range(len(loans)):
+                if i < len(per_loan_by_month) and month in per_loan_by_month[i]:
+                    loan_balances[i] = per_loan_by_month[i][month].end_bal
+        elif loans:
+            loan_balances = [cf.end_bal]
 
     return result
 
