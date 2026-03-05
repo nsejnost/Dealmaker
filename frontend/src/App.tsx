@@ -353,7 +353,8 @@ export default function App() {
   const totalFace = deal.loans.reduce((s, l) => s + l.original_face, 0);
   const dealArb = React.useMemo(() => {
     if (!result || !result.collateral_analytics) return null;
-    const collat = result.collateral_analytics;
+    const anyOvr = deal.loans.some(l => l.lp_amort_wam != null || l.lp_balloon != null || l.lp_io_period != null || l.lp_wam != null);
+    const collat = (anyOvr ? result.loan_pricing_analytics : result.collateral_analytics) || result.collateral_analytics!;
     const classes = deal.structure.classes.filter(c => c.class_type !== 'IO');
     if (classes.length === 0) return null;
 
@@ -497,9 +498,10 @@ export default function App() {
                 </thead>
                 <tbody>
                   {deal.loans.map((loan, i) => {
-                    const a = result?.per_loan_analytics?.[i];
+                    const contractual = result?.per_loan_analytics?.[i];
                     const hasOverrides = loan.lp_amort_wam != null || loan.lp_balloon != null || loan.lp_io_period != null || loan.lp_wam != null;
                     const lp = hasOverrides ? result?.per_loan_pricing_analytics?.[i] : null;
+                    const a = lp || contractual;
                     return (
                       <React.Fragment key={i}>
                       <tr>
@@ -537,7 +539,7 @@ export default function App() {
                         <td style={tdStyle}><input type="number" value={loan.lp_balloon ?? ''} onChange={e => updateLoan(i, 'lp_balloon', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 45}} placeholder="-" /></td>
                         <td style={tdStyle}><input type="number" value={loan.lp_io_period ?? ''} onChange={e => updateLoan(i, 'lp_io_period', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 40}} placeholder="-" /></td>
                         <td style={tdStyle}><input type="number" value={loan.lp_wam ?? ''} onChange={e => updateLoan(i, 'lp_wam', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 45}} placeholder="-" /></td>
-                        {/* Analytics - show contractual */}
+                        {/* Analytics - show LP override when set, otherwise contractual */}
                         {result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (() => {
                           if (!a) return <td colSpan={8} style={tdStyle}>-</td>;
                           return <>
@@ -552,22 +554,22 @@ export default function App() {
                           </>;
                         })()}
                       </tr>
-                      {/* LP Override analytics row - shown when overrides are set */}
-                      {lp && result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (
+                      {/* Contractual analytics sub-row - shown when LP overrides differ from contractual */}
+                      {lp && contractual && result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (
                         <tr style={{ background: '#1a1a2e' }}>
                           <td style={tdStyle}></td>
-                          <td colSpan={12} style={{...tdStyle, color: '#a78bfa', fontSize: 10, fontStyle: 'italic'}}>LP Override</td>
+                          <td colSpan={12} style={{...tdStyle, color: '#64748b', fontSize: 10, fontStyle: 'italic'}}>Contractual</td>
                           <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={3}></td>
                           <td style={{...tdStyle, borderLeft: '2px solid #475569'}}></td>
                           <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={4}></td>
-                          <td style={{...tdStyleR, borderLeft: '2px solid #475569', color: '#a78bfa'}}>{lp.price.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#a78bfa'}}>{lp.yield_pct.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#a78bfa'}}>{lp.j_spread.toFixed(1)}</td>
-                          <td style={{...tdStyleR, color: '#a78bfa'}}>{lp.wal.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#a78bfa'}}>{lp.modified_duration.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#a78bfa'}}>{lp.convexity.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#a78bfa'}}>{lp.risk_dpdy.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#a78bfa'}}>{lp.tsy_rate_at_wal.toFixed(4)}</td>
+                          <td style={{...tdStyleR, borderLeft: '2px solid #475569', color: '#64748b'}}>{contractual.price.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#64748b'}}>{contractual.yield_pct.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#64748b'}}>{contractual.j_spread.toFixed(1)}</td>
+                          <td style={{...tdStyleR, color: '#64748b'}}>{contractual.wal.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#64748b'}}>{contractual.modified_duration.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#64748b'}}>{contractual.convexity.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#64748b'}}>{contractual.risk_dpdy.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#64748b'}}>{contractual.tsy_rate_at_wal.toFixed(4)}</td>
                         </tr>
                       )}
                       </React.Fragment>
@@ -585,8 +587,10 @@ export default function App() {
                       <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={3}></td>
                       <td style={{...tdStyle, borderLeft: '2px solid #475569'}}></td>
                       <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={4}></td>
-                      {result && result.collateral_analytics && (() => {
-                        const a = result.collateral_analytics!;
+                      {result && (result.loan_pricing_analytics || result.collateral_analytics) && (() => {
+                        const anyOvr = deal.loans.some(l => l.lp_amort_wam != null || l.lp_balloon != null || l.lp_io_period != null || l.lp_wam != null);
+                        const a = (anyOvr ? result.loan_pricing_analytics : result.collateral_analytics) || result.collateral_analytics;
+                        if (!a) return null;
                         return <>
                           <td style={{...tdStyleR, borderLeft: '2px solid #475569', color: '#38bdf8'}}>{a.price.toFixed(4)}</td>
                           <td style={{...tdStyleR, color: '#38bdf8'}}>{a.yield_pct.toFixed(4)}</td>
