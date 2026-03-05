@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { Deal, DealResult, BondClass, PLDCurveEntry, PrepaymentType, LoanInput, CashflowRow, BondCashflowRow, AnalyticsOutput } from './types/deal';
-import { dealApi, type UploadResult } from './api/dealApi';
+import { dealApi } from './api/dealApi';
 import { CashflowChart } from './components/CashflowChart';
 import { BondCashflowChart } from './components/BondCashflowChart';
 
@@ -148,23 +148,89 @@ export default function App() {
     dealApi.listDeals().then(setSavedDeals).catch(() => {});
   }, []);
 
-  const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const CSV_HEADERS = [
+    'dated_date','first_settle','delay','original_face','coupon_net','wac_gross',
+    'wam','amort_wam','io_period','balloon','seasoning','lockout_months',
+    'prepayment_penalty','pricing_type','pricing_input','settle_date',
+    'lp_amort_wam','lp_balloon','lp_io_period','lp_wam',
+  ] as const;
+
+  const downloadCsvTemplate = useCallback(() => {
+    const dl = makeDefaultLoan();
+    const row = [
+      dl.dated_date, dl.first_settle, dl.delay, dl.original_face, dl.coupon_net, dl.wac_gross,
+      dl.wam, dl.amort_wam, dl.io_period, dl.balloon, dl.seasoning, dl.lockout_months,
+      '', dl.pricing_type, dl.pricing_input, dl.settle_date ?? '',
+      '', '', '', '',
+    ];
+    const csv = [CSV_HEADERS.join(','), row.join(',')].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'loan_template.csv'; a.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const handleCsvImport = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setUploading(true);
     setError(null);
-    try {
-      const data: UploadResult = await dealApi.uploadExcel(file);
-      setDeal(d => {
-        const updatedLoan = { ...d.loans[0], ...data.loan };
-        return { ...d, loans: [updatedLoan, ...d.loans.slice(1)], loan: updatedLoan, pricing: { ...d.pricing, ...data.pricing } };
-      });
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const text = ev.target?.result as string;
+        const lines = text.split(/\r?\n/).filter(l => l.trim());
+        if (lines.length < 2) throw new Error('CSV must have a header row and at least one data row.');
+        const headers = lines[0].split(',').map(h => h.trim());
+        const required = ['dated_date','first_settle','original_face','coupon_net','wac_gross','wam','balloon'];
+        const missing = required.filter(r => !headers.includes(r));
+        if (missing.length > 0) throw new Error(`Missing required columns: ${missing.join(', ')}`);
+        const colIdx = Object.fromEntries(headers.map((h, i) => [h, i]));
+        const get = (row: string[], col: string) => {
+          const idx = colIdx[col];
+          return idx !== undefined && idx < row.length ? row[idx].trim() : '';
+        };
+        const dl = makeDefaultLoan();
+        const loans: LoanInput[] = [];
+        for (let r = 1; r < lines.length; r++) {
+          const vals = lines[r].split(',');
+          const str = (col: string, def: string) => get(vals, col) || def;
+          const int = (col: string, def: number) => { const v = get(vals, col); return v ? parseInt(v) : def; };
+          const flt = (col: string, def: number) => { const v = get(vals, col); return v ? parseFloat(v) : def; };
+          const nullInt = (col: string) => { const v = get(vals, col); return v ? parseInt(v) : null; };
+          const pxType = str('pricing_type', 'Price');
+          loans.push({
+            dated_date: str('dated_date', dl.dated_date),
+            first_settle: str('first_settle', dl.first_settle),
+            delay: int('delay', dl.delay),
+            original_face: flt('original_face', dl.original_face),
+            coupon_net: flt('coupon_net', dl.coupon_net),
+            wac_gross: flt('wac_gross', dl.wac_gross),
+            wam: int('wam', dl.wam),
+            amort_wam: int('amort_wam', dl.amort_wam),
+            io_period: int('io_period', dl.io_period),
+            balloon: int('balloon', dl.balloon),
+            seasoning: int('seasoning', dl.seasoning),
+            lockout_months: int('lockout_months', dl.lockout_months),
+            prepayment_penalty: parsePenaltyString(get(vals, 'prepayment_penalty')),
+            pricing_type: (['Price','Yield','JSpread'].includes(pxType) ? pxType : 'Price') as LoanInput['pricing_type'],
+            pricing_input: flt('pricing_input', dl.pricing_input),
+            settle_date: get(vals, 'settle_date') || null,
+            lp_amort_wam: nullInt('lp_amort_wam'),
+            lp_balloon: nullInt('lp_balloon'),
+            lp_io_period: nullInt('lp_io_period'),
+            lp_wam: nullInt('lp_wam'),
+          });
+        }
+        if (loans.length === 0) throw new Error('No loan rows found in CSV.');
+        setDeal(d => ({ ...d, loans, loan: loans[0] }));
+        setResult(null);
+      } catch (err: any) {
+        setError(err.message);
+      }
+    };
+    reader.readAsText(file);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   }, []);
 
   const runDeal = useCallback(async () => {
@@ -393,10 +459,9 @@ export default function App() {
             onChange={e => setDeal(d => ({ ...d, deal_name: e.target.value }))}
             style={{ ...inputStyle, width: 160 }}
           />
-          <input ref={fileInputRef} type="file" accept=".xlsm,.xlsx" onChange={handleUpload} style={{ display: 'none' }} />
-          <button onClick={() => fileInputRef.current?.click()} disabled={uploading} style={btnSecondary}>
-            {uploading ? 'Reading...' : 'Import Excel'}
-          </button>
+          <button onClick={downloadCsvTemplate} style={btnSecondary}>Download Template</button>
+          <input ref={fileInputRef} type="file" accept=".csv" onChange={handleCsvImport} style={{ display: 'none' }} />
+          <button onClick={() => fileInputRef.current?.click()} style={btnSecondary}>Import Loans (CSV)</button>
           <button onClick={saveDeal} style={btnSecondary}>Save</button>
           <button onClick={runDeal} disabled={loading} style={btnPrimary}>
             {loading ? 'Running...' : 'Run Deal'}
