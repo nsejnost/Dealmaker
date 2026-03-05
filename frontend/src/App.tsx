@@ -35,6 +35,24 @@ function termLabel(term: number): string {
   return `${term}y`;
 }
 
+function fmtComma(n: number): string {
+  return n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
+function parseComma(s: string): number {
+  return parseFloat(s.replace(/,/g, '')) || 0;
+}
+
+function parseTenor(s: string): number | null {
+  const t = s.trim().toUpperCase();
+  const mMatch = t.match(/^(\d+(?:\.\d+)?)\s*M$/);
+  if (mMatch) return parseFloat(mMatch[1]) / 12;
+  const yMatch = t.match(/^(\d+(?:\.\d+)?)\s*Y$/);
+  if (yMatch) return parseFloat(yMatch[1]);
+  const n = parseFloat(t);
+  return isNaN(n) ? null : n;
+}
+
 /* ── defaults ────────────────────────────────────────────────── */
 
 const defaultPLD: PLDCurveEntry[] = [
@@ -404,9 +422,9 @@ export default function App() {
     const points = lines.map(line => {
       const parts = line.split('\t');
       if (parts.length < 2) return null;
-      const term = parseFloat(parts[0].trim());
+      const term = parseTenor(parts[0]);
       const rate = parseFloat(parts[1].trim());
-      if (isNaN(term) || isNaN(rate)) return null;
+      if (term === null || isNaN(rate)) return null;
       return { term, rate };
     }).filter((p): p is { term: number; rate: number } => p !== null);
     if (points.length > 0) {
@@ -576,9 +594,9 @@ export default function App() {
                         <td style={tdStyle}><input type="date" value={loan.dated_date} onChange={e => updateLoan(i, 'dated_date', e.target.value)} style={{...inputStyle, width: 120}} /></td>
                         <td style={tdStyle}><input type="date" value={loan.first_settle} onChange={e => updateLoan(i, 'first_settle', e.target.value)} style={{...inputStyle, width: 120}} /></td>
                         <td style={tdStyle}><input type="number" value={loan.delay} onChange={e => updateLoan(i, 'delay', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
-                        <td style={tdStyle}><input type="number" value={loan.original_face} onChange={e => updateLoan(i, 'original_face', parseFloat(e.target.value))} style={{...inputStyle, width: 90}} /></td>
-                        <td style={tdStyle}><input type="number" step="0.0025" value={loan.coupon_net} onChange={e => updateLoan(i, 'coupon_net', parseFloat(e.target.value))} style={{...inputStyle, width: 65}} /></td>
-                        <td style={tdStyle}><input type="number" step="0.0025" value={loan.wac_gross} onChange={e => updateLoan(i, 'wac_gross', parseFloat(e.target.value))} style={{...inputStyle, width: 65}} /></td>
+                        <td style={tdStyle}><input type="text" value={fmtComma(loan.original_face)} onChange={e => updateLoan(i, 'original_face', parseComma(e.target.value))} style={{...inputStyle, width: 100}} /></td>
+                        <td style={tdStyle}><input type="number" step="0.25" value={(loan.coupon_net * 100).toFixed(4)} onChange={e => updateLoan(i, 'coupon_net', parseFloat(e.target.value) / 100)} style={{...inputStyle, width: 65}} /></td>
+                        <td style={tdStyle}><input type="number" step="0.25" value={(loan.wac_gross * 100).toFixed(4)} onChange={e => updateLoan(i, 'wac_gross', parseFloat(e.target.value) / 100)} style={{...inputStyle, width: 65}} /></td>
                         <td style={tdStyle}><input type="number" value={loan.wam} onChange={e => updateLoan(i, 'wam', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
                         <td style={tdStyle}><input type="number" value={loan.amort_wam} onChange={e => updateLoan(i, 'amort_wam', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
                         <td style={tdStyle}><input type="number" value={loan.io_period ?? ''} onChange={e => updateLoan(i, 'io_period', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 40}} placeholder="None" /></td>
@@ -646,8 +664,8 @@ export default function App() {
                       <td style={tdStyle}></td>
                       <td colSpan={3} style={{...tdStyle, color: '#38bdf8', fontSize: 11}}>TOTAL / WEIGHTED</td>
                       <td style={tdStyleR}>{fmt(totalFace, 0)}</td>
-                      <td style={tdStyleR}>{totalFace > 0 ? (deal.loans.reduce((s, l) => s + l.original_face * l.coupon_net, 0) / totalFace).toFixed(4) : '-'}</td>
-                      <td style={tdStyleR}>{totalFace > 0 ? (deal.loans.reduce((s, l) => s + l.original_face * l.wac_gross, 0) / totalFace).toFixed(4) : '-'}</td>
+                      <td style={tdStyleR}>{totalFace > 0 ? (deal.loans.reduce((s, l) => s + l.original_face * l.coupon_net, 0) / totalFace * 100).toFixed(4) : '-'}</td>
+                      <td style={tdStyleR}>{totalFace > 0 ? (deal.loans.reduce((s, l) => s + l.original_face * l.wac_gross, 0) / totalFace * 100).toFixed(4) : '-'}</td>
                       <td colSpan={6} style={tdStyle}></td>
                       <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={3}></td>
                       <td style={{...tdStyle, borderLeft: '2px solid #475569'}}></td>
@@ -781,13 +799,13 @@ export default function App() {
                           <td style={tdStyle}><input value={cls.class_id} onChange={e => updateClass(i, 'class_id', e.target.value)} style={{...inputStyle, width: 70}} /></td>
                           <td style={tdStyle}><span style={{ color: cls.class_type === 'SEQ' ? '#38bdf8' : cls.class_type === 'PT' ? '#a78bfa' : '#fbbf24', fontWeight: 600, fontSize: 11 }}>{cls.class_type}</span></td>
                           <td style={tdStyle}>
-                            {cls.class_type !== 'IO' && <input type="number" value={cls.original_balance} onChange={e => updateClass(i, 'original_balance', parseFloat(e.target.value))} style={{...inputStyle, width: 90}} />}
+                            {cls.class_type !== 'IO' && <input type="text" value={fmtComma(cls.original_balance)} onChange={e => updateClass(i, 'original_balance', parseComma(e.target.value))} style={{...inputStyle, width: 100}} />}
                           </td>
                           <td style={tdStyle}>
                             {cls.class_type !== 'IO' && <select value={cls.coupon_type} onChange={e => updateClass(i, 'coupon_type', e.target.value)} style={{...inputStyle, width: 55}}><option value="FIX">FIX</option><option value="WAC">WAC</option></select>}
                           </td>
                           <td style={tdStyle}>
-                            {cls.class_type !== 'IO' && cls.coupon_type === 'FIX' && <input type="number" step="0.0025" value={cls.coupon_fix} onChange={e => updateClass(i, 'coupon_fix', parseFloat(e.target.value))} style={{...inputStyle, width: 70}} />}
+                            {cls.class_type !== 'IO' && cls.coupon_type === 'FIX' && <input type="number" step="0.25" value={(cls.coupon_fix * 100).toFixed(4)} onChange={e => updateClass(i, 'coupon_fix', parseFloat(e.target.value) / 100)} style={{...inputStyle, width: 70}} />}
                             {cls.class_type !== 'IO' && cls.coupon_type === 'WAC' && <span style={{ color: '#a78bfa', fontSize: 11 }}>WAC</span>}
                           </td>
                           <td style={tdStyle}>{cls.class_type === 'SEQ' ? cls.priority_rank : '-'}</td>
@@ -987,12 +1005,12 @@ export default function App() {
             <div style={{ padding: '10px', background: '#0f172a', borderRadius: 6, border: '1px solid #334155' }}>
               <h4 style={{ margin: '0 0 6px', fontSize: 13, color: '#94a3b8' }}>Paste Curve Data</h4>
               <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6 }}>
-                Paste tab-separated data: Tenor(yrs)&#9;Rate(%) — one point per line
+                Paste tab-separated data: Tenor&#9;Rate(%) — one point per line. Tenor accepts years (e.g. 0.5), or M/Y format (e.g. 1M, 3M, 1Y, 10Y)
               </div>
               <textarea
                 value={pasteText}
                 onChange={e => setPasteText(e.target.value)}
-                placeholder={"0.0833\t3.564\n0.25\t3.682\n1\t3.564\n2\t3.513\n5\t3.649\n10\t4.07\n30\t4.716"}
+                placeholder={"1M\t3.564\n3M\t3.682\n1Y\t3.564\n2Y\t3.513\n5Y\t3.649\n10Y\t4.07\n30Y\t4.716"}
                 style={{
                   ...inputStyle,
                   width: '100%',
