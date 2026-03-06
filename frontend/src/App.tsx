@@ -138,7 +138,6 @@ function makeDefaultDeal(): Deal {
     },
     structure: {
       classes: [],
-      pt_share: 0,
       fee_rate: 0,
       prepay: {
         prepay_type: 'None',
@@ -767,8 +766,7 @@ export default function App() {
               <button onClick={() => addClass('PT')} style={btnSecondary}>+ PT</button>
               <button onClick={() => addClass('IO')} style={btnSecondary}>+ IO</button>
               <span style={{ marginLeft: 16, fontSize: 12, color: '#94a3b8' }}>
-                PT Share: <input type="number" step="0.1" value={deal.structure.pt_share} onChange={e => setDeal(d => ({ ...d, structure: { ...d.structure, pt_share: parseFloat(e.target.value) } }))} style={{...inputStyle, width: 50}} />
-                &nbsp; Fee Rate: <input type="number" step="0.001" value={deal.structure.fee_rate} onChange={e => setDeal(d => ({ ...d, structure: { ...d.structure, fee_rate: parseFloat(e.target.value) } }))} style={{...inputStyle, width: 60}} />
+                Fee Rate: <input type="number" step="0.001" value={deal.structure.fee_rate} onChange={e => setDeal(d => ({ ...d, structure: { ...d.structure, fee_rate: parseFloat(e.target.value) } }))} style={{...inputStyle, width: 60}} />
               </span>
             </div>
             {deal.structure.classes.length > 0 && (

@@ -11,7 +11,7 @@ Waterfall order:
 1. Pay fees
 2. Pay bond interest by priority rank (SEQ/PT)
 3. IO gets remaining interest
-4. PT group gets pt_share of principal (pro-rata within group)
+4. PT group gets pro-rata share of principal by balance
 5. SEQ gets remaining principal sequentially by rank
 """
 
@@ -80,7 +80,6 @@ def run_waterfall(
     if not classes:
         return {}
 
-    pt_share = structure.pt_share
     fee_rate = structure.fee_rate
 
     # Initialize bond balances
@@ -166,10 +165,14 @@ def run_waterfall(
         # Principal waterfall
         principal_rem = collat_principal
 
-        # PT group first
-        if pt_classes and pt_share > 0:
+        # PT bonds get pro-rata share by balance, SEQ gets remainder sequentially
+        all_prin_classes = pt_classes + seq_classes
+        total_prin_bal = sum(bond_bals[c.class_id] for c in all_prin_classes)
+
+        # PT group: pro-rata share of principal based on balance
+        if pt_classes and total_prin_bal > 0:
             pt_total_bal = sum(bond_bals[c.class_id] for c in pt_classes)
-            pt_prin = min(pt_share * principal_rem, pt_total_bal)
+            pt_prin = min(principal_rem * (pt_total_bal / total_prin_bal), pt_total_bal)
 
             for cls in pt_classes:
                 cls_bal = bond_bals[cls.class_id]
@@ -177,10 +180,8 @@ def run_waterfall(
                     share = cls_bal / pt_total_bal
                 else:
                     share = 0.0
-                cls_prin = pt_prin * share
-                cls_prin = min(cls_prin, cls_bal)
+                cls_prin = min(pt_prin * share, cls_bal)
 
-                # Update the last entry
                 entry = result[cls.class_id][-1]
                 entry.principal_paid = cls_prin
                 entry.end_bal = cls_bal - cls_prin
@@ -188,7 +189,7 @@ def run_waterfall(
 
             principal_rem -= pt_prin
 
-        # SEQ classes
+        # SEQ classes: sequential paydown with remaining principal
         for cls in seq_classes:
             cls_bal = bond_bals[cls.class_id]
             cls_prin = min(cls_bal, principal_rem)

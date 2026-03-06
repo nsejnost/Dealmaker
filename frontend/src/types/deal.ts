@@ -86,7 +86,6 @@ export interface BondClass {
 
 export interface DealStructure {
   classes: BondClass[];
-  pt_share: number;
   fee_rate: number;
   prepay: PrepaymentAssumption;
 }

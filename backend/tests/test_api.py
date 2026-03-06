@@ -137,7 +137,6 @@ class TestRunInline:
                     "pt_group_id": None,
                 },
             ],
-            "pt_share": 0.0,
             "fee_rate": 0.0,
         }
 
