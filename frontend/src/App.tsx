@@ -739,8 +739,6 @@ export default function App() {
                   <input type="number" value={deal.structure.prepay.speed} onChange={e => updatePrepay('speed', parseFloat(e.target.value))} style={{...inputStyle, width: 60}} />
                 </>}
                 {deal.structure.prepay.prepay_type === 'CPJ' && <>
-                  <label style={labelStyle}>Lockout</label>
-                  <input type="number" value={deal.structure.prepay.lockout_months} onChange={e => updatePrepay('lockout_months', parseInt(e.target.value))} style={{...inputStyle, width: 50}} />
                   <label style={labelStyle}>PLD Mult</label>
                   <input type="number" step="0.1" value={deal.structure.prepay.pld_multiplier} onChange={e => updatePrepay('pld_multiplier', parseFloat(e.target.value))} style={{...inputStyle, width: 50}} />
                   <button onClick={() => setShowPLD(!showPLD)} style={btnSmall}>{showPLD ? 'Hide PLD' : 'PLD Curve'}</button>
@@ -802,6 +800,17 @@ export default function App() {
                   <tbody>
                     {deal.structure.classes.map((cls, i) => {
                       const ba = result?.bond_analytics[cls.class_id];
+                      const isIO = cls.class_type === 'IO';
+                      // IO coupon = WAC - weighted avg coupon of non-IO bonds (by balance)
+                      let ioCouponDisplay = '';
+                      if (isIO) {
+                        const nonIO = deal.structure.classes.filter(c => c.class_type !== 'IO');
+                        const totalNonIOBal = nonIO.reduce((s, c) => s + c.original_balance, 0);
+                        const wtdCpn = totalNonIOBal > 0 ? nonIO.reduce((s, c) => s + c.original_balance * (c.coupon_type === 'WAC' ? (totalFace > 0 ? deal.loans.reduce((a, l) => a + l.original_face * l.wac_gross, 0) / totalFace : 0) : c.coupon_fix), 0) / totalNonIOBal : 0;
+                        const wac = totalFace > 0 ? deal.loans.reduce((s, l) => s + l.original_face * l.wac_gross, 0) / totalFace : 0;
+                        const ioCpn = wac - wtdCpn;
+                        ioCouponDisplay = (ioCpn * 100).toFixed(4);
+                      }
                       return (
                         <tr key={i}>
                           <td style={tdStyle}>
@@ -812,21 +821,24 @@ export default function App() {
                           <td style={tdStyle}><input value={cls.class_id} onChange={e => updateClass(i, 'class_id', e.target.value)} style={{...inputStyle, width: 70}} /></td>
                           <td style={tdStyle}><span style={{ color: cls.class_type === 'SEQ' ? '#38bdf8' : cls.class_type === 'PT' ? '#a78bfa' : '#fbbf24', fontWeight: 600, fontSize: 11 }}>{cls.class_type}</span></td>
                           <td style={tdStyle}>
-                            {cls.class_type !== 'IO' && <BlurInput type="text" value={cls.original_balance} format={fmtComma} parse={s => updateClass(i, 'original_balance', parseComma(s))} style={{...inputStyle, width: 100}} />}
+                            {!isIO && <BlurInput type="text" value={cls.original_balance} format={fmtComma} parse={s => updateClass(i, 'original_balance', parseComma(s))} style={{...inputStyle, width: 100}} />}
+                            {isIO && <span style={{ color: '#94a3b8', fontSize: 11 }}>{fmtComma(totalFace)}</span>}
                           </td>
                           <td style={tdStyle}>
-                            {cls.class_type !== 'IO' && <select value={cls.coupon_type} onChange={e => updateClass(i, 'coupon_type', e.target.value)} style={{...inputStyle, width: 55}}><option value="FIX">FIX</option><option value="WAC">WAC</option></select>}
+                            {!isIO && <select value={cls.coupon_type} onChange={e => updateClass(i, 'coupon_type', e.target.value)} style={{...inputStyle, width: 55}}><option value="FIX">FIX</option><option value="WAC">WAC</option></select>}
+                            {isIO && <span style={{ color: '#94a3b8', fontSize: 11 }}>IO</span>}
                           </td>
                           <td style={tdStyle}>
-                            {cls.class_type !== 'IO' && cls.coupon_type === 'FIX' && <BlurInput type="text" value={cls.coupon_fix} format={v => (v * 100).toFixed(4)} parse={s => updateClass(i, 'coupon_fix', parseFloat(s) / 100)} style={{...inputStyle, width: 70}} />}
-                            {cls.class_type !== 'IO' && cls.coupon_type === 'WAC' && <span style={{ color: '#a78bfa', fontSize: 11 }}>WAC</span>}
+                            {!isIO && cls.coupon_type === 'FIX' && <BlurInput type="text" value={cls.coupon_fix} format={v => (v * 100).toFixed(4)} parse={s => updateClass(i, 'coupon_fix', parseFloat(s) / 100)} style={{...inputStyle, width: 70}} />}
+                            {!isIO && cls.coupon_type === 'WAC' && <span style={{ color: '#a78bfa', fontSize: 11 }}>WAC</span>}
+                            {isIO && <span style={{ color: '#94a3b8', fontSize: 11 }}>{ioCouponDisplay}</span>}
                           </td>
                           <td style={tdStyle}>{cls.class_type === 'SEQ' ? cls.priority_rank : '-'}</td>
                           <td style={tdStyle}>
-                            {cls.class_type !== 'IO' && <select value={cls.pricing_type} onChange={e => updateClass(i, 'pricing_type', e.target.value)} style={{...inputStyle, width: 75}}><option value="Price">Price</option><option value="Yield">Yield</option><option value="JSpread">J-Sprd</option></select>}
+                            <select value={cls.pricing_type} onChange={e => updateClass(i, 'pricing_type', e.target.value)} style={{...inputStyle, width: 75}}><option value="Price">Price</option><option value="Yield">Yield</option><option value="JSpread">J-Sprd</option></select>
                           </td>
                           <td style={tdStyle}>
-                            {cls.class_type !== 'IO' && <input type="number" step="0.01" value={cls.pricing_input} onChange={e => updateClass(i, 'pricing_input', parseFloat(e.target.value))} style={{...inputStyle, width: 70}} />}
+                            <input type="number" step="0.01" value={cls.pricing_input} onChange={e => updateClass(i, 'pricing_input', parseFloat(e.target.value))} style={{...inputStyle, width: 70}} />
                           </td>
                           <td style={tdStyle}>
                             <input type="number" step="1" min="0" max="100" value={cls.penalty_pct ?? ''} onChange={e => updateClass(i, 'penalty_pct', e.target.value ? parseFloat(e.target.value) : null)} style={{...inputStyle, width: 50}} placeholder="Auto" />
