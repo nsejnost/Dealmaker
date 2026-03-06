@@ -210,7 +210,14 @@ def run_waterfall(
             penalty = cf.unsched_prn * penalty_rate / 100.0
 
         if penalty > 0:
-            if io_classes:
+            all_classes = seq_classes + pt_classes + io_classes
+            has_overrides = any(c.penalty_pct is not None for c in all_classes)
+            if has_overrides:
+                for cls in all_classes:
+                    pct = (cls.penalty_pct or 0) / 100.0
+                    entry = result[cls.class_id][-1]
+                    entry.penalty_income = penalty * pct
+            elif io_classes:
                 # All penalty income goes to IO class
                 for cls in io_classes:
                     entry = result[cls.class_id][-1]

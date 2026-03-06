@@ -53,6 +53,17 @@ function parseTenor(s: string): number | null {
   return isNaN(n) ? null : n;
 }
 
+function BlurInput({ value, format, parse, ...props }: {
+  value: any; format: (v: any) => string; parse: (s: string) => void;
+} & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'onBlur'>) {
+  const [local, setLocal] = React.useState<string | null>(null);
+  return <input {...props}
+    value={local !== null ? local : format(value)}
+    onChange={e => setLocal(e.target.value)}
+    onBlur={() => { if (local !== null) { parse(local); setLocal(null); } }}
+    onFocus={e => setLocal(e.target.value)} />;
+}
+
 /* ── defaults ────────────────────────────────────────────────── */
 
 const defaultPLD: PLDCurveEntry[] = [
@@ -382,6 +393,7 @@ export default function App() {
       pt_group_id: null,
       pricing_type: 'Price',
       pricing_input: 100,
+      penalty_pct: null,
     };
     setDeal(d => ({
       ...d,
@@ -594,9 +606,9 @@ export default function App() {
                         <td style={tdStyle}><input type="date" value={loan.dated_date} onChange={e => updateLoan(i, 'dated_date', e.target.value)} style={{...inputStyle, width: 120}} /></td>
                         <td style={tdStyle}><input type="date" value={loan.first_settle} onChange={e => updateLoan(i, 'first_settle', e.target.value)} style={{...inputStyle, width: 120}} /></td>
                         <td style={tdStyle}><input type="number" value={loan.delay} onChange={e => updateLoan(i, 'delay', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
-                        <td style={tdStyle}><input type="text" value={fmtComma(loan.original_face)} onChange={e => updateLoan(i, 'original_face', parseComma(e.target.value))} style={{...inputStyle, width: 100}} /></td>
-                        <td style={tdStyle}><input type="number" step="0.25" value={(loan.coupon_net * 100).toFixed(4)} onChange={e => updateLoan(i, 'coupon_net', parseFloat(e.target.value) / 100)} style={{...inputStyle, width: 65}} /></td>
-                        <td style={tdStyle}><input type="number" step="0.25" value={(loan.wac_gross * 100).toFixed(4)} onChange={e => updateLoan(i, 'wac_gross', parseFloat(e.target.value) / 100)} style={{...inputStyle, width: 65}} /></td>
+                        <td style={tdStyle}><BlurInput type="text" value={loan.original_face} format={fmtComma} parse={s => updateLoan(i, 'original_face', parseComma(s))} style={{...inputStyle, width: 100}} /></td>
+                        <td style={tdStyle}><BlurInput type="text" value={loan.coupon_net} format={v => (v * 100).toFixed(4)} parse={s => updateLoan(i, 'coupon_net', parseFloat(s) / 100)} style={{...inputStyle, width: 65}} /></td>
+                        <td style={tdStyle}><BlurInput type="text" value={loan.wac_gross} format={v => (v * 100).toFixed(4)} parse={s => updateLoan(i, 'wac_gross', parseFloat(s) / 100)} style={{...inputStyle, width: 65}} /></td>
                         <td style={tdStyle}><input type="number" value={loan.wam} onChange={e => updateLoan(i, 'wam', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
                         <td style={tdStyle}><input type="number" value={loan.amort_wam} onChange={e => updateLoan(i, 'amort_wam', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
                         <td style={tdStyle}><input type="number" value={loan.io_period ?? ''} onChange={e => updateLoan(i, 'io_period', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 40}} placeholder="None" /></td>
@@ -615,7 +627,7 @@ export default function App() {
                         <td style={tdStyle}><input type="date" value={loan.settle_date || ''} onChange={e => updateLoan(i, 'settle_date', e.target.value)} style={{...inputStyle, width: 120}} /></td>
                         {/* Penalty */}
                         <td style={{...tdStyle, borderLeft: '2px solid #475569'}}>
-                          <input type="text" placeholder="10-9-8..." value={penaltyToString(loan.prepayment_penalty)} onChange={e => updateLoan(i, 'prepayment_penalty', parsePenaltyString(e.target.value))} style={{...inputStyle, width: 100}} title={loan.prepayment_penalty.length > 0 ? `${loan.prepayment_penalty.length}-yr schedule` : 'No penalty'} />
+                          <BlurInput type="text" placeholder="10-9-8..." value={loan.prepayment_penalty} format={penaltyToString} parse={s => updateLoan(i, 'prepayment_penalty', parsePenaltyString(s))} style={{...inputStyle, width: 100}} title={loan.prepayment_penalty.length > 0 ? `${loan.prepayment_penalty.length}-yr schedule` : 'No penalty'} />
                         </td>
                         {/* LP Override */}
                         <td style={{...tdStyle, borderLeft: '2px solid #475569'}}><input type="number" value={loan.lp_amort_wam ?? ''} onChange={e => updateLoan(i, 'lp_amort_wam', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 45}} placeholder="-" /></td>
@@ -775,6 +787,7 @@ export default function App() {
                       <th style={thStyle}>Rank</th>
                       <th style={thStyle}>Pricing</th>
                       <th style={thStyle}>Px Input</th>
+                      <th style={thStyle}>Penalty %</th>
                       {result && Object.keys(result.bond_analytics).length > 0 && <>
                         <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Price</th>
                         <th style={thStyle}>Yield</th>
@@ -799,13 +812,13 @@ export default function App() {
                           <td style={tdStyle}><input value={cls.class_id} onChange={e => updateClass(i, 'class_id', e.target.value)} style={{...inputStyle, width: 70}} /></td>
                           <td style={tdStyle}><span style={{ color: cls.class_type === 'SEQ' ? '#38bdf8' : cls.class_type === 'PT' ? '#a78bfa' : '#fbbf24', fontWeight: 600, fontSize: 11 }}>{cls.class_type}</span></td>
                           <td style={tdStyle}>
-                            {cls.class_type !== 'IO' && <input type="text" value={fmtComma(cls.original_balance)} onChange={e => updateClass(i, 'original_balance', parseComma(e.target.value))} style={{...inputStyle, width: 100}} />}
+                            {cls.class_type !== 'IO' && <BlurInput type="text" value={cls.original_balance} format={fmtComma} parse={s => updateClass(i, 'original_balance', parseComma(s))} style={{...inputStyle, width: 100}} />}
                           </td>
                           <td style={tdStyle}>
                             {cls.class_type !== 'IO' && <select value={cls.coupon_type} onChange={e => updateClass(i, 'coupon_type', e.target.value)} style={{...inputStyle, width: 55}}><option value="FIX">FIX</option><option value="WAC">WAC</option></select>}
                           </td>
                           <td style={tdStyle}>
-                            {cls.class_type !== 'IO' && cls.coupon_type === 'FIX' && <input type="number" step="0.25" value={(cls.coupon_fix * 100).toFixed(4)} onChange={e => updateClass(i, 'coupon_fix', parseFloat(e.target.value) / 100)} style={{...inputStyle, width: 70}} />}
+                            {cls.class_type !== 'IO' && cls.coupon_type === 'FIX' && <BlurInput type="text" value={cls.coupon_fix} format={v => (v * 100).toFixed(4)} parse={s => updateClass(i, 'coupon_fix', parseFloat(s) / 100)} style={{...inputStyle, width: 70}} />}
                             {cls.class_type !== 'IO' && cls.coupon_type === 'WAC' && <span style={{ color: '#a78bfa', fontSize: 11 }}>WAC</span>}
                           </td>
                           <td style={tdStyle}>{cls.class_type === 'SEQ' ? cls.priority_rank : '-'}</td>
@@ -814,6 +827,9 @@ export default function App() {
                           </td>
                           <td style={tdStyle}>
                             {cls.class_type !== 'IO' && <input type="number" step="0.01" value={cls.pricing_input} onChange={e => updateClass(i, 'pricing_input', parseFloat(e.target.value))} style={{...inputStyle, width: 70}} />}
+                          </td>
+                          <td style={tdStyle}>
+                            <input type="number" step="1" min="0" max="100" value={cls.penalty_pct ?? ''} onChange={e => updateClass(i, 'penalty_pct', e.target.value ? parseFloat(e.target.value) : null)} style={{...inputStyle, width: 50}} placeholder="Auto" />
                           </td>
                           {result && Object.keys(result.bond_analytics).length > 0 && (() => {
                             if (!ba) return <td colSpan={7} style={tdStyle}>-</td>;

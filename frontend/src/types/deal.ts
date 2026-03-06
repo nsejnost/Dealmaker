@@ -81,6 +81,7 @@ export interface BondClass {
   pt_group_id: string | null;
   pricing_type: 'Price' | 'Yield' | 'JSpread';
   pricing_input: number;
+  penalty_pct: number | null;
 }
 
 export interface DealStructure {
