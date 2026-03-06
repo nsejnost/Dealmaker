@@ -128,6 +128,7 @@ class BondClass(BaseModel):
     pt_group_id: Optional[str] = None
     pricing_type: PricingType = PricingType.PRICE
     pricing_input: float = 100.0
+    penalty_pct: Optional[float] = None
 
 
 class DealStructure(BaseModel):
