@@ -133,7 +133,6 @@ class BondClass(BaseModel):
 
 class DealStructure(BaseModel):
     classes: list[BondClass] = []
-    pt_share: float = Field(default=0.0, ge=0.0, le=1.0)
     fee_rate: float = Field(default=0.0, description="Annual fee rate on collateral balance")
     prepay: PrepaymentAssumption = PrepaymentAssumption()
 

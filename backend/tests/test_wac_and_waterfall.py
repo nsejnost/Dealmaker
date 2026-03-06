@@ -75,7 +75,6 @@ def make_seq_structure():
                 priority_rank=2,
             ),
         ],
-        pt_share=0.0,
         fee_rate=0.0,
     )
 
@@ -94,7 +93,6 @@ def make_wac_structure():
                 priority_rank=1,
             ),
         ],
-        pt_share=0.0,
         fee_rate=0.0,
     )
 
@@ -122,7 +120,6 @@ def make_io_structure():
                 priority_rank=0,
             ),
         ],
-        pt_share=0.0,
         fee_rate=0.0,
     )
 
@@ -379,7 +376,6 @@ class TestPTWaterfall:
                     priority_rank=0,
                 ),
             ],
-            pt_share=1.0,
             fee_rate=0.0,
         )
 
