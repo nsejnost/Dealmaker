@@ -50,13 +50,17 @@ def _get_penalty_rate(loan: LoanInput, month: int) -> float:
     """Get the prepayment penalty rate for a given month.
 
     The penalty schedule is an annual step-down, e.g. [10,9,8,7,6,5,4,3,2,1]
-    means 10% in year 1, 9% in year 2, etc.
+    means 10% in year 1 after lockout, 9% in year 2 after lockout, etc.
+    The schedule starts the month after the lockout period expires.
     """
     if not loan.prepayment_penalty:
         return 0.0
-    # Loan year (0-indexed): year 0 = months 1-12, year 1 = months 13-24, etc.
+    lockout = loan.lockout_months or 0
     age = loan.seasoning + month
-    year_idx = max(0, (age - 1)) // 12
+    if age <= lockout:
+        return 0.0
+    months_past_lockout = age - lockout
+    year_idx = (months_past_lockout - 1) // 12
     if year_idx < len(loan.prepayment_penalty):
         return loan.prepayment_penalty[year_idx]
     return 0.0
