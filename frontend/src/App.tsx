@@ -911,9 +911,9 @@ export default function App() {
                     <tr>
                       <th style={thStyle}>Mo</th><th style={thStyle}>Date</th><th style={thStyle}>CF Date</th>
                       <th style={thStyle}>YrFrac</th><th style={thStyle}>Beg Bal</th><th style={thStyle}>Pmt Agy</th>
-                      <th style={thStyle}>Int Inv</th><th style={thStyle}>Int Agy</th><th style={thStyle}>Reg Prn</th>
-                      <th style={thStyle}>Balloon</th><th style={thStyle}>End Bal</th><th style={thStyle}>Net Prn</th>
-                      <th style={thStyle}>Net Flow</th>
+                      <th style={thStyle}>Int Inv</th><th style={thStyle}>Int Agy</th>
+                      <th style={thStyle}>Sched Prn</th><th style={thStyle}>Prepaid</th><th style={thStyle}>Defaulted</th><th style={thStyle}>Total Prn</th>
+                      <th style={thStyle}>End Bal</th><th style={thStyle}>Net Flow</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -927,10 +927,11 @@ export default function App() {
                         <td style={tdStyleR}>{fmt(cf.pmt_to_agy)}</td>
                         <td style={tdStyleR}>{fmt(cf.int_to_inv)}</td>
                         <td style={tdStyleR}>{fmt(cf.int_to_agy)}</td>
-                        <td style={tdStyleR}>{fmt(cf.reg_prn)}</td>
-                        <td style={tdStyleR}>{fmt(cf.balloon_pay)}</td>
-                        <td style={tdStyleR}>{fmt(cf.end_bal)}</td>
+                        <td style={tdStyleR}>{fmt(cf.reg_prn + cf.balloon_pay)}</td>
+                        <td style={tdStyleR}>{fmt(cf.unsched_prn_vol)}</td>
+                        <td style={tdStyleR}>{fmt(cf.unsched_prn_inv)}</td>
                         <td style={tdStyleR}>{fmt(cf.net_prn)}</td>
+                        <td style={tdStyleR}>{fmt(cf.end_bal)}</td>
                         <td style={tdStyleR}>{fmt(cf.net_flow)}</td>
                       </tr>
                     ))}
@@ -1096,13 +1097,19 @@ function DealCashflowTable({ result, classes, exportCSV }: {
       date: serialToDate(cf.cf_date_serial),
       collat_beg_bal: cf.beg_bal,
       collat_interest: cf.int_to_inv,
-      collat_principal: cf.net_prn,
+      collat_sched: cf.reg_prn + cf.balloon_pay,
+      collat_prepaid: cf.unsched_prn_vol,
+      collat_default: cf.unsched_prn_inv,
+      collat_total_prn: cf.net_prn,
       collat_end_bal: cf.end_bal,
     };
     for (const bid of bondIds) {
       const bcf = result.bond_cashflows[bid]?.find(b => b.month === cf.month);
       row[`${bid}_beg`] = bcf?.beg_bal ?? 0;
       row[`${bid}_int`] = bcf?.interest_paid ?? 0;
+      row[`${bid}_sched`] = bcf?.sched_prn ?? 0;
+      row[`${bid}_prepaid`] = bcf?.prepaid_prn ?? 0;
+      row[`${bid}_default`] = bcf?.default_prn ?? 0;
       row[`${bid}_prn`] = bcf?.principal_paid ?? 0;
       row[`${bid}_end`] = bcf?.end_bal ?? 0;
       row[`${bid}_penalty`] = bcf?.penalty_income ?? 0;
@@ -1118,16 +1125,16 @@ function DealCashflowTable({ result, classes, exportCSV }: {
             <tr>
               <th style={thStyle} rowSpan={2}>Mo</th>
               <th style={thStyle} rowSpan={2}>Date</th>
-              <th style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={4}>Collateral</th>
+              <th style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={7}>Collateral</th>
               {bondIds.map(bid => (
-                <th key={bid} style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={5}>{bid}</th>
+                <th key={bid} style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={8}>{bid}</th>
               ))}
             </tr>
             <tr>
-              <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Beg Bal</th><th style={thStyle}>Interest</th><th style={thStyle}>Principal</th><th style={thStyle}>End Bal</th>
+              <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Beg Bal</th><th style={thStyle}>Interest</th><th style={thStyle}>Sched</th><th style={thStyle}>Prepaid</th><th style={thStyle}>Default</th><th style={thStyle}>Total Prn</th><th style={thStyle}>End Bal</th>
               {bondIds.map(bid => (
                 <React.Fragment key={bid}>
-                  <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Beg Bal</th><th style={thStyle}>Int Paid</th><th style={thStyle}>Prin Paid</th><th style={thStyle}>End Bal</th><th style={thStyle}>Penalty</th>
+                  <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Beg Bal</th><th style={thStyle}>Int Paid</th><th style={thStyle}>Sched</th><th style={thStyle}>Prepaid</th><th style={thStyle}>Default</th><th style={thStyle}>Total Prn</th><th style={thStyle}>End Bal</th><th style={thStyle}>Penalty</th>
                 </React.Fragment>
               ))}
             </tr>
@@ -1139,12 +1146,18 @@ function DealCashflowTable({ result, classes, exportCSV }: {
                 <td style={tdStyle}>{r.date}</td>
                 <td style={{...tdStyleR, borderLeft: '2px solid #475569'}}>{fmt(r.collat_beg_bal)}</td>
                 <td style={tdStyleR}>{fmt(r.collat_interest)}</td>
-                <td style={tdStyleR}>{fmt(r.collat_principal)}</td>
+                <td style={tdStyleR}>{fmt(r.collat_sched)}</td>
+                <td style={tdStyleR}>{fmt(r.collat_prepaid)}</td>
+                <td style={tdStyleR}>{fmt(r.collat_default)}</td>
+                <td style={tdStyleR}>{fmt(r.collat_total_prn)}</td>
                 <td style={tdStyleR}>{fmt(r.collat_end_bal)}</td>
                 {bondIds.map(bid => (
                   <React.Fragment key={bid}>
                     <td style={{...tdStyleR, borderLeft: '2px solid #475569'}}>{fmt(r[`${bid}_beg`])}</td>
                     <td style={tdStyleR}>{fmt(r[`${bid}_int`])}</td>
+                    <td style={tdStyleR}>{fmt(r[`${bid}_sched`])}</td>
+                    <td style={tdStyleR}>{fmt(r[`${bid}_prepaid`])}</td>
+                    <td style={tdStyleR}>{fmt(r[`${bid}_default`])}</td>
                     <td style={tdStyleR}>{fmt(r[`${bid}_prn`])}</td>
                     <td style={tdStyleR}>{fmt(r[`${bid}_end`])}</td>
                     <td style={tdStyleR}>{fmt(r[`${bid}_penalty`])}</td>

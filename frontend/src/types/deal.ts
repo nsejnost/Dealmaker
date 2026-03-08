@@ -106,6 +106,8 @@ export interface CashflowRow {
   net_prn: number;
   net_flow: number;
   unsched_prn: number;
+  unsched_prn_vol: number;
+  unsched_prn_inv: number;
   total_prn: number;
   smm: number;
   annual_prepay_rate: number;
@@ -129,6 +131,9 @@ export interface BondCashflowRow {
   interest_due: number;
   interest_paid: number;
   principal_paid: number;
+  sched_prn: number;
+  prepaid_prn: number;
+  default_prn: number;
   end_bal: number;
   coupon_rate: number;
   penalty_income: number;
