@@ -84,12 +84,8 @@ def run_waterfall(
 
     # Initialize bond balances
     bond_bals: dict[str, float] = {}
-    collat_bal = collateral_cashflows[0].beg_bal if collateral_cashflows else 0.0
     for cls in classes:
-        if cls.class_type == BondClassType.IO:
-            bond_bals[cls.class_id] = collat_bal  # IO notional = collateral balance
-        else:
-            bond_bals[cls.class_id] = cls.original_balance
+        bond_bals[cls.class_id] = cls.original_balance
 
     # Separate class types
     seq_classes = sorted(
@@ -103,6 +99,7 @@ def run_waterfall(
 
     # Track per-loan balances for WAC computation and penalties
     loan_balances = [l.original_face for l in loans]
+    collat_bal = collateral_cashflows[0].beg_bal if collateral_cashflows else 0.0
 
     # Index per-loan cashflows by month for penalty computation
     per_loan_by_month: list[dict[int, CashflowRow]] = []
@@ -154,19 +151,15 @@ def run_waterfall(
 
         # IO classes get remaining interest; track notional balance
         for cls in io_classes:
-            io_beg = bond_bals[cls.class_id]
-            io_end = cf.end_bal  # IO notional tracks collateral balance
-            io_prin = max(0.0, io_beg - io_end)
             result[cls.class_id].append(BondCashflowRow(
                 month=month,
-                beg_bal=io_beg,
+                beg_bal=0.0,
                 interest_due=interest_rem,
                 interest_paid=interest_rem,
-                principal_paid=io_prin,
-                end_bal=io_end,
+                principal_paid=0.0,
+                end_bal=0.0,
                 coupon_rate=0.0,
             ))
-            bond_bals[cls.class_id] = io_end
         interest_rem = 0.0
 
         # Principal waterfall
@@ -330,27 +323,38 @@ def compute_bond_analytics(
     pricing_type: str,
     pricing_input: float,
     curve: Optional["TreasuryCurve"] = None,
+    is_io: bool = False,
 ) -> dict:
     """Compute full analytics for a single bond class.
 
     Returns dict with: price, yield_pct, wal, j_spread, modified_duration,
     convexity, risk_dpdy, tsy_rate_at_wal, accrued.
+
+    For IO bonds (is_io=True), WAL is computed using collateral balance
+    reductions as synthetic principal (IO never receives actual principal).
     """
     from app.engines.analytics_engine import _yf_30_360, interpolate_tsy_rate
 
     # WAL
     total_prn = 0.0
     weighted_prn = 0.0
+    prev_collat_bal = original_balance if is_io else 0.0
     for bcf in bond_cfs:
         if bcf.month == 0:
             continue
-        total_prn += bcf.principal_paid
         cf_match = next((c for c in collateral_cfs if c.month == bcf.month), None)
+        if is_io:
+            prn = max(0.0, prev_collat_bal - cf_match.end_bal) if cf_match else 0.0
+            if cf_match:
+                prev_collat_bal = cf_match.end_bal
+        else:
+            prn = bcf.principal_paid
+        total_prn += prn
         if cf_match:
             yf = _yf_30_360(settle_serial, cf_match.cf_date_serial)
         else:
             yf = bcf.month / 12.0
-        weighted_prn += bcf.principal_paid * yf
+        weighted_prn += prn * yf
     wal = weighted_prn / total_prn if total_prn > 0 else 0.0
 
     # Pricing
