@@ -218,6 +218,7 @@ def run_deal(deal: Deal) -> DealResult:
                     cls.pricing_type.value,
                     cls.pricing_input,
                     curve,
+                    is_io=(cls.class_type.value == "IO"),
                 )
                 bond_analytics[cls.class_id] = AnalyticsOutput(
                     price=ba["price"],
