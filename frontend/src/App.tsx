@@ -95,14 +95,14 @@ function makeDefaultLoan(): LoanInput {
     balloon: null,
     seasoning: 0,
     lockout_months: null,
-    prepayment_penalty: [],
+    prepayment_penalty: [10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
     pricing_type: 'Price',
     pricing_input: 100,
     settle_date: '2026-03-03',
-    lp_amort_wam: null,
-    lp_balloon: null,
+    lp_amort_wam: 480,
+    lp_balloon: 120,
     lp_io_period: null,
-    lp_wam: null,
+    lp_wam: 480,
   };
 }
 
