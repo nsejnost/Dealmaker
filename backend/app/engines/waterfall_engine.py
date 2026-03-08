@@ -226,13 +226,13 @@ def run_waterfall(
             for i, loan in enumerate(loans):
                 if i < len(per_loan_by_month) and month in per_loan_by_month[i]:
                     loan_cf = per_loan_by_month[i][month]
-                    if loan_cf.unsched_prn > 0:
+                    if loan_cf.unsched_prn_vol > 0:
                         rate = _get_penalty_rate(loan, month)
-                        penalty += loan_cf.unsched_prn * rate / 100.0
-        elif cf.unsched_prn > 0 and loans:
+                        penalty += loan_cf.unsched_prn_vol * rate / 100.0
+        elif cf.unsched_prn_vol > 0 and loans:
             # Fallback: single-loan or no per-loan data
             penalty_rate = _get_penalty_rate(loans[0], month)
-            penalty = cf.unsched_prn * penalty_rate / 100.0
+            penalty = cf.unsched_prn_vol * penalty_rate / 100.0
 
         if penalty > 0:
             all_classes = seq_classes + pt_classes + io_classes
