@@ -206,11 +206,15 @@ def run_deal(deal: Deal) -> DealResult:
         # Compute bond analytics
         for cls in deal.structure.classes:
             if cls.class_id in bond_cashflows:
+                if cls.class_type.value == "IO":
+                    ob = sum(l.original_face for l in loans)
+                else:
+                    ob = cls.original_balance if cls.original_balance > 0 else 1.0
                 ba = compute_bond_analytics(
                     bond_cashflows[cls.class_id],
                     agg_settle_serial,
                     bond_collat_cfs,
-                    cls.original_balance if cls.original_balance > 0 else 1.0,
+                    ob,
                     cls.pricing_type.value,
                     cls.pricing_input,
                     curve,

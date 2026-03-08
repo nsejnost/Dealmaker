@@ -263,13 +263,19 @@ class TestIOClass:
             assert io_cfs[i].interest_paid == pytest.approx(expected_io, abs=0.01), \
                 f"Month {io_cfs[i].month}: IO {io_cfs[i].interest_paid} != {expected_io}"
 
-    def test_io_no_principal(self):
+    def test_io_notional_tracks_collateral(self):
+        """IO notional balance should track collateral balance."""
         cfs = generate_contractual_cashflows(LOAN, SETTLE)
         structure = make_io_structure()
         result = run_waterfall(cfs, structure, [LOAN])
 
-        for bcf in result["IO"]:
-            assert bcf.principal_paid == 0.0
+        io_cfs = result["IO"]
+        # IO beg_bal should start at collateral beg_bal
+        assert io_cfs[0].beg_bal == pytest.approx(cfs[0].beg_bal, rel=1e-6)
+        # IO end_bal should track collateral end_bal
+        for i, bcf in enumerate(io_cfs):
+            assert bcf.end_bal == pytest.approx(cfs[i].end_bal, rel=1e-6)
+            assert bcf.principal_paid == pytest.approx(bcf.beg_bal - bcf.end_bal, abs=0.01)
 
 
 class TestReconciliation:
