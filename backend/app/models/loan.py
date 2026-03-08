@@ -154,6 +154,8 @@ class CashflowRow(BaseModel):
     net_flow: float
     # CPJ fields (filled when CPJ active)
     unsched_prn: float = 0.0
+    unsched_prn_vol: float = 0.0  # Voluntary prepayment (CPR component)
+    unsched_prn_inv: float = 0.0  # Involuntary prepayment (PLD/default component)
     total_prn: float = 0.0
     smm: float = 0.0
     annual_prepay_rate: float = 0.0
@@ -177,6 +179,9 @@ class BondCashflowRow(BaseModel):
     interest_due: float = 0.0
     interest_paid: float = 0.0
     principal_paid: float = 0.0
+    sched_prn: float = 0.0
+    prepaid_prn: float = 0.0
+    default_prn: float = 0.0
     end_bal: float = 0.0
     coupon_rate: float = 0.0
     penalty_income: float = 0.0

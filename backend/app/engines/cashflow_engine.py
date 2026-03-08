@@ -309,9 +309,24 @@ def apply_cpj_overlay(
 
         new_row.reg_prn = sched_prn
 
+        # Compute separate SMMs for PLD and CPR components
+        smm_pld = 1.0 - (1.0 - min(max(pld_rate, 0.0), 1.0)) ** (1.0 / 12.0)
+        if age <= lockout:
+            smm_cpr = 0.0
+        else:
+            smm_cpr = 1.0 - (1.0 - min(max(cpr_ann, 0.0), 1.0)) ** (1.0 / 12.0)
+
         # Prepayable balance
         prepayable = max(0.0, current_bal - sched_prn)
         unsched_prn = prepayable * smm
+        # Split into voluntary (CPR) and involuntary (PLD) components
+        smm_total = smm_pld + smm_cpr
+        if smm_total > 0 and unsched_prn > 0:
+            unsched_prn_inv = unsched_prn * (smm_pld / smm_total)
+            unsched_prn_vol = unsched_prn * (smm_cpr / smm_total)
+        else:
+            unsched_prn_inv = 0.0
+            unsched_prn_vol = 0.0
 
         # Check if this is the balloon month
         balloon = loan.balloon
@@ -330,6 +345,12 @@ def apply_cpj_overlay(
             new_row.balloon_pay = 0.0
 
         new_row.unsched_prn = unsched_prn if not is_balloon else (current_bal - sched_prn)
+        if is_balloon:
+            new_row.unsched_prn_vol = current_bal - sched_prn
+            new_row.unsched_prn_inv = 0.0
+        else:
+            new_row.unsched_prn_vol = unsched_prn_vol
+            new_row.unsched_prn_inv = unsched_prn_inv
         new_row.total_prn = total_prn
         new_row.smm = smm
         new_row.annual_prepay_rate = annual_rate
@@ -413,6 +434,9 @@ def apply_cpr_overlay(
             new_row.balloon_pay = 0.0
 
         new_row.unsched_prn = unsched_prn if not is_balloon else (current_bal - sched_prn)
+        # CPR: all unscheduled is voluntary (no PLD component)
+        new_row.unsched_prn_vol = new_row.unsched_prn
+        new_row.unsched_prn_inv = 0.0
         new_row.total_prn = total_prn
         new_row.smm = smm
         new_row.annual_prepay_rate = annual_rate

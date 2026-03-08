@@ -165,6 +165,20 @@ def run_waterfall(
         # Principal waterfall
         principal_rem = collat_principal
 
+        # Compute collateral principal breakdown ratios for this period
+        collat_sched = cf.reg_prn + cf.balloon_pay
+        collat_prepaid = cf.unsched_prn_vol
+        collat_default = cf.unsched_prn_inv
+        collat_total = collat_sched + collat_prepaid + collat_default
+        if collat_total > 0:
+            ratio_sched = collat_sched / collat_total
+            ratio_prepaid = collat_prepaid / collat_total
+            ratio_default = collat_default / collat_total
+        else:
+            ratio_sched = 1.0
+            ratio_prepaid = 0.0
+            ratio_default = 0.0
+
         # PT bonds get pro-rata share by balance, SEQ gets remainder sequentially
         all_prin_classes = pt_classes + seq_classes
         total_prin_bal = sum(bond_bals[c.class_id] for c in all_prin_classes)
@@ -184,6 +198,9 @@ def run_waterfall(
 
                 entry = result[cls.class_id][-1]
                 entry.principal_paid = cls_prin
+                entry.sched_prn = cls_prin * ratio_sched
+                entry.prepaid_prn = cls_prin * ratio_prepaid
+                entry.default_prn = cls_prin * ratio_default
                 entry.end_bal = cls_bal - cls_prin
                 bond_bals[cls.class_id] = entry.end_bal
 
@@ -197,6 +214,9 @@ def run_waterfall(
 
             entry = result[cls.class_id][-1]
             entry.principal_paid = cls_prin
+            entry.sched_prn = cls_prin * ratio_sched
+            entry.prepaid_prn = cls_prin * ratio_prepaid
+            entry.default_prn = cls_prin * ratio_default
             entry.end_bal = cls_bal - cls_prin
             bond_bals[cls.class_id] = entry.end_bal
 
