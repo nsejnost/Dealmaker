@@ -9,7 +9,12 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`API error ${res.status}: ${text}`);
+    let detail = text;
+    try {
+      const json = JSON.parse(text);
+      if (json.detail) detail = json.detail;
+    } catch {}
+    throw new Error(`API error ${res.status}: ${detail}`);
   }
   return res.json();
 }
