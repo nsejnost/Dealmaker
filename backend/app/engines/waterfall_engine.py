@@ -272,19 +272,28 @@ def run_waterfall(
     return result
 
 
+def _index_collateral_by_month(
+    collateral_cfs: list[CashflowRow],
+) -> dict[int, CashflowRow]:
+    """Index collateral cashflows by month for O(1) lookup."""
+    return {c.month: c for c in collateral_cfs}
+
+
 def _bond_pv(
     bond_cfs: list[BondCashflowRow],
     settle_serial: int,
     collateral_cfs: list[CashflowRow],
     annual_yield: float,
+    _collat_index: dict[int, CashflowRow] | None = None,
 ) -> float:
     """Compute PV of bond cashflows at given yield (BEY convention)."""
     y = annual_yield / 100.0
     pv = 0.0
+    idx = _collat_index or _index_collateral_by_month(collateral_cfs)
     for bcf in bond_cfs:
         if bcf.month == 0:
             continue
-        cf_match = next((c for c in collateral_cfs if c.month == bcf.month), None)
+        cf_match = idx.get(bcf.month)
         if cf_match:
             yf = (cf_match.cf_date_serial - settle_serial) / 365.25
         else:
@@ -304,8 +313,10 @@ def _bond_price_from_yield(
     collateral_cfs: list[CashflowRow],
     original_balance: float,
     annual_yield: float,
+    _collat_index: dict[int, CashflowRow] | None = None,
 ) -> float:
-    pv = _bond_pv(bond_cfs, settle_serial, collateral_cfs, annual_yield)
+    idx = _collat_index or _index_collateral_by_month(collateral_cfs)
+    pv = _bond_pv(bond_cfs, settle_serial, collateral_cfs, annual_yield, _collat_index=idx)
     return (pv / original_balance * 100.0) if original_balance > 0 else 0.0
 
 
@@ -317,17 +328,19 @@ def _bond_yield_from_price(
     target_price: float,
     tol: float = 1e-10,
     max_iter: int = 200,
+    _collat_index: dict[int, CashflowRow] | None = None,
 ) -> float:
     """Newton-Raphson solver: find yield given price for a bond."""
+    idx = _collat_index or _index_collateral_by_month(collateral_cfs)
     target_pv = (target_price / 100.0) * original_balance
     y = 0.05
     for _ in range(max_iter):
-        pv = _bond_pv(bond_cfs, settle_serial, collateral_cfs, y * 100.0)
+        pv = _bond_pv(bond_cfs, settle_serial, collateral_cfs, y * 100.0, _collat_index=idx)
         err = pv - target_pv
         if abs(err) < tol:
             break
         dy = 0.0001
-        pv_up = _bond_pv(bond_cfs, settle_serial, collateral_cfs, (y + dy) * 100.0)
+        pv_up = _bond_pv(bond_cfs, settle_serial, collateral_cfs, (y + dy) * 100.0, _collat_index=idx)
         deriv = (pv_up - pv) / dy
         if abs(deriv) < 1e-15:
             break
@@ -355,6 +368,9 @@ def compute_bond_analytics(
     """
     from app.engines.analytics_engine import _yf_30_360, interpolate_tsy_rate
 
+    # Build index once for O(1) lookups
+    collat_idx = _index_collateral_by_month(collateral_cfs)
+
     # WAL
     total_prn = 0.0
     weighted_prn = 0.0
@@ -362,7 +378,7 @@ def compute_bond_analytics(
     for bcf in bond_cfs:
         if bcf.month == 0:
             continue
-        cf_match = next((c for c in collateral_cfs if c.month == bcf.month), None)
+        cf_match = collat_idx.get(bcf.month)
         if is_io:
             prn = max(0.0, prev_collat_bal - cf_match.end_bal) if cf_match else 0.0
             if cf_match:
@@ -381,28 +397,33 @@ def compute_bond_analytics(
     if pricing_type == "Price":
         price = pricing_input
         yield_pct = _bond_yield_from_price(
-            bond_cfs, settle_serial, collateral_cfs, original_balance, price
+            bond_cfs, settle_serial, collateral_cfs, original_balance, price,
+            _collat_index=collat_idx,
         )
     elif pricing_type == "JSpread" and curve is not None:
         tsy_at_wal = interpolate_tsy_rate(wal, curve)
         yield_pct = tsy_at_wal + pricing_input / 100.0
         price = _bond_price_from_yield(
-            bond_cfs, settle_serial, collateral_cfs, original_balance, yield_pct
+            bond_cfs, settle_serial, collateral_cfs, original_balance, yield_pct,
+            _collat_index=collat_idx,
         )
     else:  # Yield
         yield_pct = pricing_input
         price = _bond_price_from_yield(
-            bond_cfs, settle_serial, collateral_cfs, original_balance, yield_pct
+            bond_cfs, settle_serial, collateral_cfs, original_balance, yield_pct,
+            _collat_index=collat_idx,
         )
 
     # Duration & Convexity (1bp bump)
     dy = 0.01  # 1bp in percent
     p0 = price
     p_up = _bond_price_from_yield(
-        bond_cfs, settle_serial, collateral_cfs, original_balance, yield_pct + dy
+        bond_cfs, settle_serial, collateral_cfs, original_balance, yield_pct + dy,
+        _collat_index=collat_idx,
     )
     p_dn = _bond_price_from_yield(
-        bond_cfs, settle_serial, collateral_cfs, original_balance, yield_pct - dy
+        bond_cfs, settle_serial, collateral_cfs, original_balance, yield_pct - dy,
+        _collat_index=collat_idx,
     )
     dy_dec = dy / 100.0  # decimal
     mod_dur = -(p_up - p_dn) / (2.0 * dy_dec * p0) if abs(p0) > 1e-15 else 0.0

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
+import traceback
 import uuid
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+
+logger = logging.getLogger(__name__)
 
 from app.models.loan import (
     AnalyticsOutput,
@@ -132,7 +136,15 @@ def run_deal_endpoint(deal_id: str) -> DealResult:
     if deal_id not in DEALS_STORE:
         raise HTTPException(status_code=404, detail="Deal not found")
     deal = DEALS_STORE[deal_id]
-    result = run_deal(deal)
+    try:
+        result = run_deal(deal)
+    except Exception as exc:
+        tb = traceback.format_exc()
+        logger.error("run_deal failed for %s: %s\n%s", deal_id, exc, tb)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Deal computation failed: {exc}",
+        )
     deal.result = result
     _save_deal(deal)
     return result
@@ -141,7 +153,15 @@ def run_deal_endpoint(deal_id: str) -> DealResult:
 @router.post("/run-inline")
 def run_deal_inline(deal: Deal) -> DealResult:
     """Run deal computation without saving."""
-    return run_deal(deal)
+    try:
+        return run_deal(deal)
+    except Exception as exc:
+        tb = traceback.format_exc()
+        logger.error("run_deal_inline failed: %s\n%s", exc, tb)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Deal computation failed: {exc}",
+        )
 
 
 @router.post("/{deal_id}/scenarios")
