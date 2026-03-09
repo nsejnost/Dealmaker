@@ -292,20 +292,18 @@ def apply_cpj_overlay(
         new_row.int_to_inv = current_bal * nr
         new_row.int_to_agy = current_bal * gr
 
-        # Scheduled principal from contractual amort applied to current balance
-        # We need to compute what the scheduled principal would be on current_bal
+        # Scheduled principal: use contractual schedule (row.reg_prn) capped
+        # to current balance. This ensures prepayments don't inflate scheduled
+        # principal by lowering the interest portion of the fixed PMT.
         io_period = loan.io_period if loan.io_period is not None else 0
         totmo = loan.seasoning + row.month
         if totmo <= io_period or current_bal < 0.000001:
             sched_prn = 0.0
             new_row.pmt_to_agy = current_bal * gr if current_bal >= 0.000001 else 0.0
         else:
+            sched_prn = min(row.reg_prn, current_bal)
             pmt = _excel_pmt(gr, loan.amort_wam, loan.original_face)
-            new_row.pmt_to_agy = pmt if current_bal >= 0.000001 else 0.0
-            sched_prn = max(0.0, pmt - current_bal * gr)
-
-        # Cap scheduled principal to current balance
-        sched_prn = min(sched_prn, current_bal)
+            new_row.pmt_to_agy = min(pmt, current_bal * gr + sched_prn)
 
         new_row.reg_prn = sched_prn
 
@@ -375,11 +373,14 @@ def apply_cpr_overlay(
     contractual: list[CashflowRow],
     loan: LoanInput,
     cpr_annual: float,
+    lockout_months: int = 0,
 ) -> list[CashflowRow]:
     """Apply a flat constant prepayment rate (CPR) overlay.
 
     CPR is expressed as a percentage (e.g., 10.0 = 10% CPR).
     SMM = 1 - (1 - CPR/100)^(1/12)
+
+    During lockout (loan age <= lockout_months), no voluntary prepayment occurs.
     """
     annual_rate = min(max(cpr_annual / 100.0, 0.0), 1.0)
     smm = 1.0 - (1.0 - annual_rate) ** (1.0 / 12.0)
@@ -403,21 +404,26 @@ def apply_cpr_overlay(
         new_row.int_to_inv = current_bal * nr
         new_row.int_to_agy = current_bal * gr
 
+        # Scheduled principal: use contractual schedule capped to current balance
         io_period = loan.io_period if loan.io_period is not None else 0
         totmo = loan.seasoning + row.month
         if totmo <= io_period or current_bal < 0.000001:
             sched_prn = 0.0
             new_row.pmt_to_agy = current_bal * gr if current_bal >= 0.000001 else 0.0
         else:
+            sched_prn = min(row.reg_prn, current_bal)
             pmt = _excel_pmt(gr, loan.amort_wam, loan.original_face)
-            new_row.pmt_to_agy = pmt if current_bal >= 0.000001 else 0.0
-            sched_prn = max(0.0, pmt - current_bal * gr)
+            new_row.pmt_to_agy = min(pmt, current_bal * gr + sched_prn)
 
-        sched_prn = min(sched_prn, current_bal)
         new_row.reg_prn = sched_prn
 
         prepayable = max(0.0, current_bal - sched_prn)
-        unsched_prn = prepayable * smm
+        # Apply lockout: no voluntary prepayment during lockout period
+        age = loan.seasoning + row.month
+        if lockout_months > 0 and age <= lockout_months:
+            unsched_prn = 0.0
+        else:
+            unsched_prn = prepayable * smm
 
         balloon = loan.balloon
         if balloon is not None:
@@ -473,7 +479,10 @@ def apply_prepay_overlay(
             cpj.lockout_months = loan.lockout_months
         return apply_cpj_overlay(contractual, loan, cpj)
     elif prepay.prepay_type.value == "CPR":
-        return apply_cpr_overlay(contractual, loan, prepay.speed)
+        lockout = prepay.lockout_months
+        if lockout == 0 and (loan.lockout_months or 0) > 0:
+            lockout = loan.lockout_months
+        return apply_cpr_overlay(contractual, loan, prepay.speed, lockout_months=lockout)
     return contractual
 
 
