@@ -20,6 +20,36 @@ function serialToDate(serial: number): string {
 const fmt = (n: number, dec = 2) => n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
 const fmtPct = (n: number, dec = 4) => (n * 100).toFixed(dec) + '%';
 
+function parseCsvLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && i + 1 < line.length && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
+function normalizeDate(s: string): string {
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) return `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  return s;
+}
+
 function parsePenaltyString(s: string): number[] {
   if (!s.trim()) return [];
   return s.split('-').map(v => parseFloat(v.trim())).filter(v => !isNaN(v));
@@ -188,8 +218,8 @@ export default function App() {
     const row = [
       dl.dated_date, dl.first_settle, dl.delay, dl.original_face, dl.coupon_net, dl.wac_gross,
       dl.wam, dl.amort_wam, dl.io_period ?? '', dl.balloon ?? '', dl.seasoning, dl.lockout_months ?? '',
-      '', dl.pricing_type, dl.pricing_input, dl.settle_date ?? '',
-      '', '', '', '',
+      penaltyToString(dl.prepayment_penalty), dl.pricing_type, dl.pricing_input, dl.settle_date ?? '',
+      dl.lp_amort_wam ?? '', dl.lp_balloon ?? '', dl.lp_io_period ?? '', dl.lp_wam ?? '',
     ];
     const csv = [CSV_HEADERS.join(','), row.join(',')].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -209,7 +239,7 @@ export default function App() {
         const text = ev.target?.result as string;
         const lines = text.split(/\r?\n/).filter(l => l.trim());
         if (lines.length < 2) throw new Error('CSV must have a header row and at least one data row.');
-        const headers = lines[0].split(',').map(h => h.trim());
+        const headers = parseCsvLine(lines[0]);
         const required = ['dated_date','first_settle','original_face','coupon_net','wac_gross','wam'];
         const missing = required.filter(r => !headers.includes(r));
         if (missing.length > 0) throw new Error(`Missing required columns: ${missing.join(', ')}`);
@@ -221,17 +251,18 @@ export default function App() {
         const dl = makeDefaultLoan();
         const loans: LoanInput[] = [];
         for (let r = 1; r < lines.length; r++) {
-          const vals = lines[r].split(',');
+          const vals = parseCsvLine(lines[r]);
           const str = (col: string, def: string) => get(vals, col) || def;
           const int = (col: string, def: number) => { const v = get(vals, col); return v ? parseInt(v) : def; };
           const flt = (col: string, def: number) => { const v = get(vals, col); return v ? parseFloat(v) : def; };
           const nullInt = (col: string) => { const v = get(vals, col); return v ? parseInt(v) : null; };
-          const pxType = str('pricing_type', 'Price');
+          let pxType = str('pricing_type', 'Price');
+          if (pxType === 'J-Spread' || pxType === 'J-Sprd') pxType = 'JSpread';
           loans.push({
-            dated_date: str('dated_date', dl.dated_date),
-            first_settle: str('first_settle', dl.first_settle),
+            dated_date: normalizeDate(str('dated_date', dl.dated_date)),
+            first_settle: normalizeDate(str('first_settle', dl.first_settle)),
             delay: int('delay', dl.delay),
-            original_face: flt('original_face', dl.original_face),
+            original_face: parseFloat((get(vals, 'original_face') || '').replace(/,/g, '')) || dl.original_face,
             coupon_net: flt('coupon_net', dl.coupon_net),
             wac_gross: flt('wac_gross', dl.wac_gross),
             wam: int('wam', dl.wam),
@@ -243,7 +274,7 @@ export default function App() {
             prepayment_penalty: parsePenaltyString(get(vals, 'prepayment_penalty')),
             pricing_type: (['Price','Yield','JSpread'].includes(pxType) ? pxType : 'Price') as LoanInput['pricing_type'],
             pricing_input: flt('pricing_input', dl.pricing_input),
-            settle_date: get(vals, 'settle_date') || null,
+            settle_date: get(vals, 'settle_date') ? normalizeDate(get(vals, 'settle_date')) : null,
             lp_amort_wam: nullInt('lp_amort_wam'),
             lp_balloon: nullInt('lp_balloon'),
             lp_io_period: nullInt('lp_io_period'),
