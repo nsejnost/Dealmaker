@@ -209,16 +209,18 @@ export default function App() {
   const CSV_HEADERS = [
     'dated_date','first_settle','delay','original_face','coupon_net','wac_gross',
     'wam','amort_wam','io_period','balloon','seasoning','lockout_months',
-    'prepayment_penalty','pricing_type','pricing_input','settle_date',
+    'pricing_type','pricing_input','settle_date',
+    'prepayment_penalty',
     'lp_amort_wam','lp_balloon','lp_io_period','lp_wam',
   ] as const;
 
   const downloadCsvTemplate = useCallback(() => {
     const dl = makeDefaultLoan();
     const row = [
-      dl.dated_date, dl.first_settle, dl.delay, dl.original_face, dl.coupon_net, dl.wac_gross,
+      dl.dated_date, dl.first_settle, dl.delay, dl.original_face, dl.coupon_net * 100, dl.wac_gross * 100,
       dl.wam, dl.amort_wam, dl.io_period ?? '', dl.balloon ?? '', dl.seasoning, dl.lockout_months ?? '',
-      penaltyToString(dl.prepayment_penalty), dl.pricing_type, dl.pricing_input, dl.settle_date ?? '',
+      dl.pricing_type, dl.pricing_input, dl.settle_date ?? '',
+      penaltyToString(dl.prepayment_penalty),
       dl.lp_amort_wam ?? '', dl.lp_balloon ?? '', dl.lp_io_period ?? '', dl.lp_wam ?? '',
     ];
     const csv = [CSV_HEADERS.join(','), row.join(',')].join('\n');
@@ -256,6 +258,13 @@ export default function App() {
           const int = (col: string, def: number) => { const v = get(vals, col); return v ? parseInt(v) : def; };
           const flt = (col: string, def: number) => { const v = get(vals, col); return v ? parseFloat(v) : def; };
           const nullInt = (col: string) => { const v = get(vals, col); return v ? parseInt(v) : null; };
+          const pctToDecimal = (col: string, def: number) => {
+            const v = get(vals, col);
+            if (!v) return def;
+            const n = parseFloat(v);
+            if (isNaN(n)) return def;
+            return n > 0.5 ? n / 100 : n;
+          };
           let pxType = str('pricing_type', 'Price');
           if (pxType === 'J-Spread' || pxType === 'J-Sprd') pxType = 'JSpread';
           loans.push({
@@ -263,8 +272,8 @@ export default function App() {
             first_settle: normalizeDate(str('first_settle', dl.first_settle)),
             delay: int('delay', dl.delay),
             original_face: parseFloat((get(vals, 'original_face') || '').replace(/,/g, '')) || dl.original_face,
-            coupon_net: flt('coupon_net', dl.coupon_net),
-            wac_gross: flt('wac_gross', dl.wac_gross),
+            coupon_net: pctToDecimal('coupon_net', dl.coupon_net),
+            wac_gross: pctToDecimal('wac_gross', dl.wac_gross),
             wam: int('wam', dl.wam),
             amort_wam: int('amort_wam', dl.amort_wam),
             io_period: nullInt('io_period'),
@@ -275,10 +284,10 @@ export default function App() {
             pricing_type: (['Price','Yield','JSpread'].includes(pxType) ? pxType : 'Price') as LoanInput['pricing_type'],
             pricing_input: flt('pricing_input', dl.pricing_input),
             settle_date: get(vals, 'settle_date') ? normalizeDate(get(vals, 'settle_date')) : null,
-            lp_amort_wam: nullInt('lp_amort_wam'),
-            lp_balloon: nullInt('lp_balloon'),
-            lp_io_period: nullInt('lp_io_period'),
-            lp_wam: nullInt('lp_wam'),
+            lp_amort_wam: nullInt('lp_amort_wam') ?? dl.lp_amort_wam,
+            lp_balloon: nullInt('lp_balloon') ?? dl.lp_balloon,
+            lp_io_period: nullInt('lp_io_period') ?? dl.lp_io_period,
+            lp_wam: nullInt('lp_wam') ?? dl.lp_wam,
           });
         }
         if (loans.length === 0) throw new Error('No loan rows found in CSV.');
