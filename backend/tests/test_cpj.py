@@ -132,8 +132,12 @@ class TestCPJLockout:
                 continue
             age = LOAN.seasoning + cf.month
             if age > 24:
+                # Hazard-style: smm = 1 - (1-smm_pld)*(1-smm_cpr)
                 expected_pld = get_pld_rate(age, DEFAULT_PLD_CURVE)
-                expected_rate = expected_pld + 0.15
+                smm_pld = 1.0 - (1.0 - expected_pld) ** (1.0 / 12.0)
+                smm_cpr = 1.0 - (1.0 - 0.15) ** (1.0 / 12.0)
+                expected_smm = 1.0 - (1.0 - smm_pld) * (1.0 - smm_cpr)
+                expected_rate = 1.0 - (1.0 - expected_smm) ** 12.0
                 assert cf.annual_prepay_rate == pytest.approx(expected_rate, abs=1e-6), \
                     f"Month {cf.month}: post-lockout rate {cf.annual_prepay_rate} != {expected_rate}"
 
@@ -142,10 +146,7 @@ class TestCPJSMM:
     """Test SMM computation."""
 
     def test_smm_from_annual_rate(self):
-        """SMM = 1 - (1 - annual_rate)^(1/12)"""
-        annual = 0.15 + 0.0130  # 15 CPJ + PLD month 25
-        expected_smm = 1 - (1 - annual) ** (1 / 12)
-
+        """SMM via hazard combination: 1 - (1-smm_pld)*(1-smm_cpr)"""
         contractual = generate_contractual_cashflows(LOAN, SETTLE)
         cpj = CPJInput(
             enabled=True,
@@ -155,10 +156,11 @@ class TestCPJSMM:
         )
         result = apply_cpj_overlay(contractual, LOAN, cpj)
 
-        # Month 1: age=1, PLD=0.013, CPR=0.15 => annual=0.163
+        # Month 1: age=1, PLD=0.013, CPR=0.15
         cf1 = result[1]
-        expected_annual = 0.013 + 0.15
-        expected_smm_1 = 1 - (1 - expected_annual) ** (1 / 12)
+        smm_pld = 1.0 - (1.0 - 0.013) ** (1.0 / 12.0)
+        smm_cpr = 1.0 - (1.0 - 0.15) ** (1.0 / 12.0)
+        expected_smm_1 = 1.0 - (1.0 - smm_pld) * (1.0 - smm_cpr)
         assert cf1.smm == pytest.approx(expected_smm_1, abs=1e-8)
 
 
