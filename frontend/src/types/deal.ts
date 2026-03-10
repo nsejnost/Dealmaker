@@ -143,6 +143,7 @@ export interface DealResult {
   collateral_cashflows: CashflowRow[];
   collateral_analytics: AnalyticsOutput | null;
   per_loan_analytics: (AnalyticsOutput | null)[];
+  per_loan_current_faces: number[];
   loan_pricing_cashflows: CashflowRow[];
   loan_pricing_analytics: AnalyticsOutput | null;
   per_loan_pricing_analytics: (AnalyticsOutput | null)[];

@@ -64,6 +64,7 @@ def run_deal(deal: Deal) -> DealResult:
     all_bond_collat: list[list[CashflowRow]] = []
     per_loan_analytics: list[AnalyticsOutput | None] = []
     per_loan_pricing_analytics: list[AnalyticsOutput | None] = []
+    per_loan_current_faces: list[float] = []
 
     for loan in loans:
         # Resolve per-loan settle (fall back to deal.pricing.settle_date)
@@ -78,6 +79,7 @@ def run_deal(deal: Deal) -> DealResult:
         # --- Stream A: Contractual cashflows ---
         cfs = generate_contractual_cashflows(loan, settle)
         all_contractual.append(cfs)
+        per_loan_current_faces.append(cfs[0].beg_bal if cfs else loan.original_face)
 
         analytics = compute_full_analytics(
             cashflows=cfs,
@@ -254,6 +256,7 @@ def run_deal(deal: Deal) -> DealResult:
         collateral_cashflows=contractual_cfs,
         collateral_analytics=contractual_analytics,
         per_loan_analytics=per_loan_analytics,
+        per_loan_current_faces=per_loan_current_faces,
         loan_pricing_cashflows=loan_pricing_cfs,
         loan_pricing_analytics=loan_pricing_analytics,
         per_loan_pricing_analytics=per_loan_pricing_analytics,

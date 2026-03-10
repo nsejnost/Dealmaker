@@ -415,7 +415,7 @@ export default function App() {
       '1st Settle': l.first_settle,
       'Delay': l.delay,
       'Original Face': l.original_face,
-      'Current Face': currentFaces[i]?.current_face ?? '',
+      'Current Face': result?.per_loan_current_faces?.[i] ?? currentFaces[i]?.current_face ?? '',
       'Factor': currentFaces[i]?.factor ?? '',
       'Net Coupon': l.coupon_net,
       'WAC Gross': l.wac_gross,
@@ -670,7 +670,20 @@ export default function App() {
     const classes = deal.structure.classes.filter(c => c.class_type !== 'IO');
     if (classes.length === 0) return null;
 
-    const collatProceeds = (collat.price / 100) * totalFace;
+    // Collateral proceeds = sum of per-loan (clean_mv + accrued) using current face
+    let collatCleanMV = 0;
+    let collatAccrued = 0;
+    for (let li = 0; li < deal.loans.length; li++) {
+      const hasOvr = deal.loans[li].lp_amort_wam != null || deal.loans[li].lp_balloon != null || deal.loans[li].lp_io_period != null || deal.loans[li].lp_wam != null;
+      const la = (hasOvr ? result.per_loan_pricing_analytics?.[li] : result.per_loan_analytics[li]) || result.per_loan_analytics[li];
+      const cf = result.per_loan_current_faces?.[li] ?? deal.loans[li].original_face;
+      if (la) {
+        collatCleanMV += (la.price / 100) * cf;
+        collatAccrued += (la.accrued / 100) * cf;
+      }
+    }
+    const collatProceeds = collatCleanMV + collatAccrued;
+
     let bondProceeds = 0;
     let weightedYield = 0;
     let totalBondBalance = 0;
@@ -688,8 +701,8 @@ export default function App() {
     const avgBondYield = totalBondBalance > 0 ? weightedYield / totalBondBalance : 0;
     const yieldSpread = collat.yield_pct - avgBondYield;
 
-    return { arbDollar, arbPer100, collatYield: collat.yield_pct, avgBondYield, yieldSpread, bondProceeds, collatProceeds };
-  }, [result, deal.structure.classes, totalFace]);
+    return { arbDollar, arbPer100, collatYield: collat.yield_pct, avgBondYield, yieldSpread, bondProceeds, collatProceeds, collatCleanMV, collatAccrued };
+  }, [result, deal.loans, deal.structure.classes, totalFace]);
 
   return (
     <div style={{ fontFamily: 'system-ui, -apple-system, sans-serif', background: '#0f172a', color: '#e2e8f0', minHeight: '100vh' }}>
@@ -775,7 +788,7 @@ export default function App() {
                     <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Penalty</th>
                     <th style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={4}>LP Override</th>
                     {result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (
-                      <th style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={8}>Analytics</th>
+                      <th style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={10}>Analytics</th>
                     )}
                   </tr>
                   <tr>
@@ -802,14 +815,16 @@ export default function App() {
                     <th style={thStyle2}>IO</th>
                     <th style={thStyle2}>WAM</th>
                     {result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && <>
-                      <th style={{...thStyle2, borderLeft: '2px solid #475569'}}>Price</th>
+                      <th style={{...thStyle2, borderLeft: '2px solid #475569'}}>Price (Cln)</th>
                       <th style={thStyle2}>Yield</th>
                       <th style={thStyle2}>J-Sprd</th>
                       <th style={thStyle2}>WAL</th>
                       <th style={thStyle2}>Dur</th>
-                      <th style={thStyle}>Cvx</th>
+                      <th style={thStyle2}>Cvx</th>
                       <th style={thStyle2}>Risk</th>
                       <th style={thStyle2}>Tsy</th>
+                      <th style={{...thStyle2, borderLeft: '2px solid #475569'}}>Accrued ($)</th>
+                      <th style={thStyle2}>Mkt Value</th>
                     </>}
                   </tr>
                 </thead>
@@ -829,7 +844,11 @@ export default function App() {
                         <td style={tdStyle}><input type="date" value={loan.first_settle} onChange={e => updateLoan(i, 'first_settle', e.target.value)} style={{...inputStyle, width: 120}} /></td>
                         <td style={tdStyle}><input type="number" value={loan.delay} onChange={e => updateLoan(i, 'delay', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
                         <td style={tdStyle}><BlurInput type="text" value={loan.original_face} format={fmtComma} parse={s => updateLoan(i, 'original_face', parseComma(s))} style={{...inputStyle, width: 100}} /></td>
-                        <td style={{...tdStyleR, fontSize: 11, color: currentFaces[i] ? '#e2e8f0' : '#475569'}}>{currentFaces[i] ? fmt(currentFaces[i].current_face, 2) : '-'}</td>
+                        <td style={{...tdStyleR, fontSize: 11, color: (result?.per_loan_current_faces?.[i] ?? currentFaces[i]?.current_face) ? '#e2e8f0' : '#475569'}}>{
+                          result?.per_loan_current_faces?.[i] != null
+                            ? fmt(result.per_loan_current_faces[i], 2)
+                            : (currentFaces[i] ? fmt(currentFaces[i].current_face, 2) : '-')
+                        }</td>
                         <td style={tdStyle}><BlurInput type="text" value={loan.coupon_net} format={v => (v * 100).toFixed(4)} parse={s => updateLoan(i, 'coupon_net', parseFloat(s) / 100)} style={{...inputStyle, width: 65}} /></td>
                         <td style={tdStyle}><BlurInput type="text" value={loan.wac_gross} format={v => (v * 100).toFixed(4)} parse={s => updateLoan(i, 'wac_gross', parseFloat(s) / 100)} style={{...inputStyle, width: 65}} /></td>
                         <td style={tdStyle}><input type="number" value={loan.wam} onChange={e => updateLoan(i, 'wam', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
@@ -859,7 +878,10 @@ export default function App() {
                         <td style={tdStyle}><input type="number" value={loan.lp_wam ?? ''} onChange={e => updateLoan(i, 'lp_wam', e.target.value ? parseInt(e.target.value) : null)} style={{...inputStyle, width: 45}} placeholder="-" /></td>
                         {/* Analytics - show LP override when set, otherwise contractual */}
                         {result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (() => {
-                          if (!a) return <td colSpan={8} style={tdStyle}>-</td>;
+                          if (!a) return <td colSpan={10} style={tdStyle}>-</td>;
+                          const cf = result.per_loan_current_faces?.[i] ?? loan.original_face;
+                          const accruedDollars = (a.accrued / 100) * cf;
+                          const cleanMV = (a.price / 100) * cf;
                           return <>
                             <td style={{...tdStyleR, borderLeft: '2px solid #475569'}}>{a.price.toFixed(4)}</td>
                             <td style={tdStyleR}>{a.yield_pct.toFixed(4)}</td>
@@ -869,6 +891,8 @@ export default function App() {
                             <td style={tdStyleR}>{a.convexity.toFixed(4)}</td>
                             <td style={tdStyleR}>{a.risk_dpdy.toFixed(4)}</td>
                             <td style={tdStyleR}>{a.tsy_rate_at_wal.toFixed(4)}</td>
+                            <td style={{...tdStyleR, borderLeft: '2px solid #475569'}}>{fmt(accruedDollars)}</td>
+                            <td style={tdStyleR}>{fmt(cleanMV)}</td>
                           </>;
                         })()}
                       </tr>
@@ -881,31 +905,46 @@ export default function App() {
                       <td style={tdStyle}></td>
                       <td colSpan={3} style={{...tdStyle, color: '#38bdf8', fontSize: 11}}>TOTAL / WEIGHTED</td>
                       <td style={tdStyleR}>{fmt(totalFace, 0)}</td>
-                      <td style={{...tdStyleR, color: currentFaces.length > 0 ? '#38bdf8' : '#475569'}}>{currentFaces.length > 0 ? fmt(currentFaces.reduce((s, f) => s + f.current_face, 0), 0) : '-'}</td>
+                      <td style={{...tdStyleR, color: (result?.per_loan_current_faces?.length ?? 0) > 0 ? '#38bdf8' : (currentFaces.length > 0 ? '#38bdf8' : '#475569')}}>{
+                        (result?.per_loan_current_faces?.length ?? 0) > 0
+                          ? fmt(result!.per_loan_current_faces.reduce((s, f) => s + f, 0), 0)
+                          : (currentFaces.length > 0 ? fmt(currentFaces.reduce((s, f) => s + f.current_face, 0), 0) : '-')
+                      }</td>
                       <td style={tdStyleR}>{totalFace > 0 ? (deal.loans.reduce((s, l) => s + l.original_face * l.coupon_net, 0) / totalFace * 100).toFixed(4) : '-'}</td>
                       <td style={tdStyleR}>{totalFace > 0 ? (deal.loans.reduce((s, l) => s + l.original_face * l.wac_gross, 0) / totalFace * 100).toFixed(4) : '-'}</td>
                       <td colSpan={6} style={tdStyle}></td>
                       <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={3}></td>
                       <td style={{...tdStyle, borderLeft: '2px solid #475569'}}></td>
                       <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={4}></td>
-                      {result && (result.loan_pricing_analytics || result.collateral_analytics) && (() => {
+                      {result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (() => {
                         const anyOvr = deal.loans.some(l => l.lp_amort_wam != null || l.lp_balloon != null || l.lp_io_period != null || l.lp_wam != null);
-                        const a = (anyOvr ? result.loan_pricing_analytics : result.collateral_analytics) || result.collateral_analytics;
-                        if (!a) return null;
+                        const aggA = (anyOvr ? result.loan_pricing_analytics : result.collateral_analytics) || result.collateral_analytics;
+                        // Compute aggregate price weighted by current face from per-loan data
+                        let totalCF = 0, totalCleanMV = 0, totalAccrued = 0;
+                        for (let li = 0; li < deal.loans.length; li++) {
+                          const hasOvr = deal.loans[li].lp_amort_wam != null || deal.loans[li].lp_balloon != null || deal.loans[li].lp_io_period != null || deal.loans[li].lp_wam != null;
+                          const la = (hasOvr ? result.per_loan_pricing_analytics?.[li] : result.per_loan_analytics[li]) || result.per_loan_analytics[li];
+                          const cf = result.per_loan_current_faces?.[li] ?? deal.loans[li].original_face;
+                          if (la) {
+                            totalCF += cf;
+                            totalCleanMV += (la.price / 100) * cf;
+                            totalAccrued += (la.accrued / 100) * cf;
+                          }
+                        }
+                        const aggPrice = totalCF > 0 ? (totalCleanMV / totalCF) * 100 : 0;
                         return <>
-                          <td style={{...tdStyleR, borderLeft: '2px solid #475569', color: '#38bdf8'}}>{a.price.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.yield_pct.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.j_spread.toFixed(1)}</td>
-                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.wal.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.modified_duration.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.convexity.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.risk_dpdy.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#38bdf8'}}>{a.tsy_rate_at_wal.toFixed(4)}</td>
+                          <td style={{...tdStyleR, borderLeft: '2px solid #475569', color: '#38bdf8'}}>{aggPrice.toFixed(4)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{aggA?.yield_pct.toFixed(4) ?? '-'}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{aggA?.j_spread.toFixed(1) ?? '-'}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{aggA?.wal.toFixed(4) ?? '-'}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{aggA?.modified_duration.toFixed(4) ?? '-'}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{aggA?.convexity.toFixed(4) ?? '-'}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{aggA?.risk_dpdy.toFixed(4) ?? '-'}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{aggA?.tsy_rate_at_wal.toFixed(4) ?? '-'}</td>
+                          <td style={{...tdStyleR, borderLeft: '2px solid #475569', color: '#38bdf8'}}>{fmt(totalAccrued)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{fmt(totalCleanMV)}</td>
                         </>;
                       })()}
-                      {result && (!result.collateral_analytics) && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (
-                        <td colSpan={8} style={{...tdStyle, borderLeft: '2px solid #475569'}}>-</td>
-                      )}
                     </tr>
                   )}
                 </tbody>
