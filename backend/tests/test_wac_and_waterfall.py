@@ -673,3 +673,85 @@ class TestPVIncludesPenalty:
 
         assert pv_with > pv_without, \
             f"PV with penalty ({pv_with}) should exceed PV without ({pv_without})"
+
+
+class TestScenarioGrid:
+    """Scenario grid should not crash and return valid results."""
+
+    def test_scenario_grid_runs(self):
+        """run_scenario_grid should execute without errors."""
+        from app.engines.deal_runner import run_scenario_grid
+        from app.models.loan import (
+            Deal,
+            PricingInput,
+            DealStructure,
+            PricingType,
+            PrepaymentAssumption,
+            PrepaymentType,
+        )
+
+        deal = Deal(
+            loans=[LOAN],
+            pricing=PricingInput(
+                settle_date=SETTLE,
+                curve_date=SETTLE,
+                pricing_type=PricingType.PRICE,
+                pricing_input=100.0,
+            ),
+            structure=DealStructure(
+                classes=[
+                    BondClass(
+                        class_id="A",
+                        class_type=BondClassType.SEQ,
+                        original_balance=1_000_000.0,
+                        current_balance=1_000_000.0,
+                        coupon_type=CouponType.FIX,
+                        coupon_fix=0.04,
+                        priority_rank=1,
+                    ),
+                ],
+                fee_rate=0.0,
+                prepay=PrepaymentAssumption(prepay_type=PrepaymentType.NONE),
+            ),
+            cpj=CPJInput(
+                enabled=False,
+                cpj_speed=0,
+                lockout_months=0,
+                pld_curve=DEFAULT_PLD_CURVE,
+            ),
+        )
+
+        grid = run_scenario_grid(deal, rate_shocks_bps=[0, 50], cpj_multipliers=[1.0])
+        assert 0 in grid
+        assert 50 in grid
+        assert 1.0 in grid[0]
+        assert "A" in grid[0][1.0]
+        assert "price" in grid[0][1.0]["A"]
+
+
+class TestAccrued30360:
+    """Accrued interest should use 30/360 convention."""
+
+    def test_accrued_uses_30_360(self):
+        """Verify accrued uses 30/360, not actual/360."""
+        from app.engines.analytics_engine import compute_accrued, _yf_30_360
+        from app.engines.cashflow_engine import _date_to_serial
+        from datetime import date
+
+        # Use dates where 30/360 differs from actual: e.g. Feb
+        # Feb has 28 actual days but 30/360 treats it as 30
+        dated = date(2026, 2, 1)
+        settle = date(2026, 3, 1)  # 28 actual days, but 30 in 30/360
+
+        dated_serial = _date_to_serial(dated)
+        settle_serial = _date_to_serial(settle)
+
+        accrued = compute_accrued(settle_serial, dated_serial, 0.06, 1_000_000.0)
+
+        # 30/360: 30 days / 360 * 0.06 * 1M = 5000.0
+        expected_30_360 = (30 / 360.0) * 0.06 * 1_000_000.0
+        # actual/360: 28 days / 360 * 0.06 * 1M = 4666.67
+        wrong_actual = (28 / 360.0) * 0.06 * 1_000_000.0
+
+        assert accrued == pytest.approx(expected_30_360, abs=1.0), \
+            f"Accrued {accrued} should match 30/360 ({expected_30_360}), not actual ({wrong_actual})"
