@@ -300,8 +300,12 @@ def _bond_pv(
             yf = bcf.month / 12.0
         total_cf = bcf.interest_paid + bcf.principal_paid
         if yf > 0:
-            disc = (1.0 + y / 2.0) ** (2.0 * yf)
-            pv += total_cf / disc
+            base = 1.0 + y / 2.0
+            if base <= 0:
+                pv += total_cf * 1e6
+            else:
+                disc = base ** (2.0 * yf)
+                pv += total_cf / disc
         else:
             pv += total_cf
     return pv
@@ -344,7 +348,7 @@ def _bond_yield_from_price(
         deriv = (pv_up - pv) / dy
         if abs(deriv) < 1e-15:
             break
-        y = y - err / deriv
+        y = max(-1.99, min(y - err / deriv, 10.0))
     return y * 100.0
 
 
