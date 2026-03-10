@@ -194,6 +194,7 @@ export default function App() {
   const [showCharts, setShowCharts] = useState(false);
   const [showCashflows, setShowCashflows] = useState(false);
   const [showDealCashflows, setShowDealCashflows] = useState(false);
+  const [showCollateral, setShowCollateral] = useState(true);
   const [activeTab, setActiveTab] = useState<'deal' | 'curve'>('deal');
   const [pasteText, setPasteText] = useState('');
   const [currentFaces, setCurrentFaces] = useState<{ original_face: number; current_face: number; factor: number }[]>([]);
@@ -753,7 +754,7 @@ export default function App() {
         <div style={{ padding: '12px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
 
           {/* ── COLLATERAL SECTION ── */}
-          <Section title="Collateral">
+          <Section title="Collateral" collapsible collapsed={!showCollateral} onToggle={() => setShowCollateral(!showCollateral)}>
             <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
               <button onClick={addLoan} style={btnSecondary}>+ Add Loan</button>
               <button onClick={computeCurrentFace} disabled={loadingFaces} style={btnSecondary}>
@@ -1393,10 +1394,10 @@ const panelHeader: React.CSSProperties = {
   margin: '0 0 8px 0', fontSize: 14, color: '#38bdf8', fontWeight: 600,
 };
 const tableStyle: React.CSSProperties = {
-  width: '100%', borderCollapse: 'collapse', fontSize: 11,
+  width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: 11,
 };
 const scrollTableStyle: React.CSSProperties = {
-  minWidth: 'max-content', borderCollapse: 'collapse', fontSize: 11,
+  minWidth: 'max-content', borderCollapse: 'separate', borderSpacing: 0, fontSize: 11,
 };
 const thStyle: React.CSSProperties = {
   textAlign: 'left', padding: '4px 6px', borderBottom: '1px solid #475569', color: '#94a3b8', fontWeight: 500, whiteSpace: 'nowrap',
