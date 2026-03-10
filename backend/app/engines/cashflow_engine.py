@@ -411,8 +411,10 @@ def apply_cpr_overlay(
         age = loan.seasoning + row.month
         if lockout_months > 0 and age <= lockout_months:
             unsched_prn = 0.0
+            effective_smm = 0.0
         else:
             unsched_prn = prepayable * smm
+            effective_smm = smm
 
         balloon = loan.balloon
         if balloon is not None:
@@ -436,8 +438,8 @@ def apply_cpr_overlay(
             new_row.unsched_prn_vol = unsched_prn
             new_row.unsched_prn_inv = 0.0
         new_row.total_prn = total_prn
-        new_row.smm = smm
-        new_row.annual_prepay_rate = annual_rate
+        new_row.smm = effective_smm
+        new_row.annual_prepay_rate = annual_rate if effective_smm > 0 else 0.0
 
         new_row.rem_prn = current_bal - sched_prn
         new_row.end_bal = max(0.0, current_bal - total_prn)

@@ -163,9 +163,20 @@ def run_deal(deal: Deal) -> DealResult:
         sum(l.original_face * l.coupon_net for l in loans) / total_face
         if total_face > 0 else loans[0].coupon_net
     )
-    # Use first loan's dates for aggregated analytics
+    # Use first loan's settle for aggregated analytics; compute accrued per-loan
     agg_settle = loans[0].settle_date or pricing.settle_date
     agg_settle_serial = _date_to_serial(agg_settle)
+
+    # Per-loan accrued summation for multi-loan correctness
+    from app.engines.analytics_engine import compute_accrued
+    agg_accrued = sum(
+        compute_accrued(agg_settle_serial, _date_to_serial(l.dated_date), l.coupon_net, l.original_face)
+        for l in loans
+    )
+    agg_accrued_per_face = agg_accrued / total_face * 100.0 if total_face > 0 else 0.0
+
+    # Use first loan's dated_date for analytics (WAL, PV use CF dates, not dated_date;
+    # accrued is overridden below from per-loan computation)
     agg_dated_serial = _date_to_serial(loans[0].dated_date)
 
     contractual_analytics = compute_full_analytics(
@@ -178,6 +189,8 @@ def run_deal(deal: Deal) -> DealResult:
         pricing_input=pricing.pricing_input,
         curve=curve,
     )
+    # Override accrued with per-loan computation
+    contractual_analytics.accrued = agg_accrued_per_face
 
     loan_pricing_analytics = compute_full_analytics(
         cashflows=loan_pricing_cfs,
@@ -189,6 +202,8 @@ def run_deal(deal: Deal) -> DealResult:
         pricing_input=pricing.pricing_input,
         curve=curve,
     )
+    # Override accrued with per-loan computation
+    loan_pricing_analytics.accrued = agg_accrued_per_face
 
     # --- Waterfall ---
     bond_cashflows: dict[str, list[BondCashflowRow]] = {}
@@ -207,7 +222,7 @@ def run_deal(deal: Deal) -> DealResult:
         for cls in deal.structure.classes:
             if cls.class_id in bond_cashflows:
                 if cls.class_type.value == "IO":
-                    ob = sum(l.original_face for l in loans)
+                    ob = cls.original_balance if cls.original_balance > 0 else sum(l.original_face for l in loans)
                 else:
                     ob = cls.original_balance if cls.original_balance > 0 else 1.0
                 ba = compute_bond_analytics(
@@ -265,6 +280,7 @@ def run_scenario_grid(
 
     base_result = run_deal(deal)
     base_yield = base_result.collateral_analytics.yield_pct if base_result.collateral_analytics else 5.0
+    curve = deal.treasury_curve if deal.treasury_curve.points else DEFAULT_TSY_CURVE
 
     grid: dict = {}
 
@@ -287,14 +303,22 @@ def run_scenario_grid(
             shocked_yield = base_yield + shock / 100.0
             class_results = {}
 
+            collat_face = sum(l.original_face for l in deal.get_loans())
             for cls in mod_deal.structure.classes:
                 if cls.class_id in result.bond_cashflows:
+                    if cls.class_type.value == "IO":
+                        ob = cls.original_balance if cls.original_balance > 0 else collat_face
+                    else:
+                        ob = cls.original_balance if cls.original_balance > 0 else 1.0
                     ba = compute_bond_analytics(
                         result.bond_cashflows[cls.class_id],
                         _date_to_serial(deal.pricing.settle_date),
                         result.bond_collateral_cashflows,
-                        cls.original_balance if cls.original_balance > 0 else 1.0,
+                        ob,
+                        "Yield",
                         shocked_yield,
+                        curve,
+                        is_io=(cls.class_type.value == "IO"),
                     )
                     class_results[cls.class_id] = {
                         "price": ba["price"],

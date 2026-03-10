@@ -289,6 +289,28 @@ class TestCPRSeasoning:
         cf_after = next(cf for cf in result if cf.month == 61)
         assert cf_after.unsched_prn > 0, "After lockout, CPR should produce prepayment"
 
+    def test_cpr_lockout_reporting_consistency(self):
+        """During lockout, smm and annual_prepay_rate should be 0 (not just unsched_prn)."""
+        loan = make_loan(seasoning=0, lockout_months=24)
+        contractual = generate_contractual_cashflows(loan, SETTLE)
+        result = apply_cpr_overlay(contractual, loan, 15.0, lockout_months=24)
+
+        for cf in result:
+            if cf.month == 0:
+                continue
+            age = loan.seasoning + cf.month
+            if age <= 24:
+                assert cf.unsched_prn == pytest.approx(0.0, abs=0.01), \
+                    f"Month {cf.month}: unsched_prn should be 0 during lockout"
+                assert cf.smm == pytest.approx(0.0, abs=1e-10), \
+                    f"Month {cf.month}: smm should be 0 during lockout, got {cf.smm}"
+                assert cf.annual_prepay_rate == pytest.approx(0.0, abs=1e-10), \
+                    f"Month {cf.month}: annual_prepay_rate should be 0 during lockout, got {cf.annual_prepay_rate}"
+            else:
+                # After lockout, should have positive speed
+                assert cf.smm > 0, f"Month {cf.month}: smm should be positive after lockout"
+                assert cf.annual_prepay_rate > 0, f"Month {cf.month}: rate should be positive after lockout"
+
     def test_cpr_lockout_with_seasoning(self):
         """CPR lockout works with seasoning - lockout applies to absolute age."""
         loan = make_loan(seasoning=36, lockout_months=24)

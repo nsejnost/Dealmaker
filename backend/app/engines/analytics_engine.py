@@ -114,19 +114,17 @@ def compute_yield_from_price(
     target_price: float,
     settle_serial: int,
     original_face: float,
+    accrued_per_100: float = 0.0,
     tol: float = 1e-10,
     max_iter: int = 200,
 ) -> float:
     """Newton-Raphson solver: find yield given price.
 
-    target_pv = target_price / 100 * original_face
+    Price is clean price. PV is dirty (includes accrued).
+    target_pv = (clean_price + accrued) / 100 * original_face
     Solve: PV(y) = target_pv
     """
-    target_pv = (target_price / 100.0) * original_face
-
-    # Compute accrued interest (already included in price convention)
-    # For GNPL, price is clean price; PV includes accrued
-    # The workbook computes accrued separately, so PV = dirty price * face / 100
+    target_pv = ((target_price + accrued_per_100) / 100.0) * original_face
 
     y = 0.05  # initial guess 5%
 
@@ -156,15 +154,14 @@ def compute_accrued(
     coupon_net: float,
     original_face: float,
 ) -> float:
-    """Compute accrued interest.
+    """Compute accrued interest using 30/360 convention for agency MBS.
 
-    Accrued = (days from dated to settle) / 360 * coupon * face
-    Using 30/360 convention for agency MBS.
+    Accrued = yf_30_360(dated, settle) * coupon * face
     """
-    days = settle_serial - dated_date_serial
-    if days <= 0:
+    yf = _yf_30_360(dated_date_serial, settle_serial)
+    if yf <= 0:
         return 0.0
-    return (days / 360.0) * coupon_net * original_face
+    return yf * coupon_net * original_face
 
 
 def compute_modified_duration(
@@ -273,10 +270,15 @@ def compute_full_analytics(
     """Compute all analytics matching Excel output."""
     wal = compute_wal(cashflows, settle_serial)
 
+    # Compute accrued before pricing so yield solver can use it
+    accrued_val = compute_accrued(settle_serial, dated_date_serial, coupon_net, original_face)
+    accrued_per_face = accrued_val / original_face * 100.0 if original_face > 0 else 0.0
+
     if pricing_type == "Price":
         price = pricing_input
         yield_pct = compute_yield_from_price(
-            cashflows, price, settle_serial, original_face
+            cashflows, price, settle_serial, original_face,
+            accrued_per_100=accrued_per_face,
         )
     elif pricing_type == "JSpread":
         # pricing_input is J-Spread in bps; solve for yield = tsy_rate_at_wal + spread
@@ -290,9 +292,6 @@ def compute_full_analytics(
         price = compute_price_from_yield(
             cashflows, yield_pct, settle_serial, original_face
         )
-
-    accrued_val = compute_accrued(settle_serial, dated_date_serial, coupon_net, original_face)
-    accrued_per_face = accrued_val / original_face * 100.0
 
     mod_dur = compute_modified_duration(
         cashflows, yield_pct, settle_serial, original_face
