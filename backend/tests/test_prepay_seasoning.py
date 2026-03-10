@@ -106,7 +106,11 @@ class TestCPJSeasoningBasics:
                 continue
             age = seasoning + cf.month
             expected_pld = get_pld_rate(age, DEFAULT_PLD_CURVE)
-            expected_rate = expected_pld + 0.15  # PLD + CPR (no lockout)
+            # Hazard-style: smm = 1 - (1-smm_pld)*(1-smm_cpr)
+            smm_pld = 1.0 - (1.0 - expected_pld) ** (1.0 / 12.0)
+            smm_cpr = 1.0 - (1.0 - 0.15) ** (1.0 / 12.0)
+            expected_smm = 1.0 - (1.0 - smm_pld) * (1.0 - smm_cpr)
+            expected_rate = 1.0 - (1.0 - expected_smm) ** 12.0
             assert cf.annual_prepay_rate == pytest.approx(expected_rate, abs=1e-6), \
                 f"seas={seasoning} month={cf.month} age={age}: rate {cf.annual_prepay_rate} != {expected_rate}"
 
@@ -151,6 +155,13 @@ class TestCPJSeasoningBasics:
 class TestCPJSeasoningLockout:
     """Verify lockout interaction with seasoning (lockout applies to absolute age)."""
 
+    def _expected_hazard_rate(self, pld, cpr=0.15):
+        """Compute expected annual_prepay_rate via hazard-style decomposition."""
+        smm_pld = 1.0 - (1.0 - pld) ** (1.0 / 12.0)
+        smm_cpr = 1.0 - (1.0 - cpr) ** (1.0 / 12.0)
+        smm = 1.0 - (1.0 - smm_pld) * (1.0 - smm_cpr)
+        return 1.0 - (1.0 - smm) ** 12.0
+
     def test_seasoning_0_lockout_24(self):
         """Standard: CPR starts at month 25 (age 25)."""
         loan = make_loan(seasoning=0)
@@ -162,13 +173,13 @@ class TestCPJSeasoningLockout:
             if cf.month == 0:
                 continue
             age = cf.month
+            pld = get_pld_rate(age, DEFAULT_PLD_CURVE)
             if age <= 24:
-                expected_pld = get_pld_rate(age, DEFAULT_PLD_CURVE)
-                assert cf.annual_prepay_rate == pytest.approx(expected_pld, abs=1e-6), \
+                assert cf.annual_prepay_rate == pytest.approx(pld, abs=1e-6), \
                     f"Month {cf.month}: during lockout, should be PLD only"
             else:
-                expected_pld = get_pld_rate(age, DEFAULT_PLD_CURVE)
-                assert cf.annual_prepay_rate == pytest.approx(expected_pld + 0.15, abs=1e-6)
+                expected = self._expected_hazard_rate(pld)
+                assert cf.annual_prepay_rate == pytest.approx(expected, abs=1e-6)
 
     def test_seasoning_12_lockout_24(self):
         """Seasoning=12: CPR starts at month 13 (age 12+13=25)."""
@@ -186,7 +197,8 @@ class TestCPJSeasoningLockout:
                 assert cf.annual_prepay_rate == pytest.approx(pld, abs=1e-6), \
                     f"Month {cf.month} (age {age}): lockout, should be PLD only"
             else:
-                assert cf.annual_prepay_rate == pytest.approx(pld + 0.15, abs=1e-6), \
+                expected = self._expected_hazard_rate(pld)
+                assert cf.annual_prepay_rate == pytest.approx(expected, abs=1e-6), \
                     f"Month {cf.month} (age {age}): post-lockout, should include CPR"
 
     def test_seasoning_30_lockout_24(self):
@@ -201,7 +213,8 @@ class TestCPJSeasoningLockout:
                 continue
             age = 30 + cf.month
             pld = get_pld_rate(age, DEFAULT_PLD_CURVE)
-            assert cf.annual_prepay_rate == pytest.approx(pld + 0.15, abs=1e-6), \
+            expected = self._expected_hazard_rate(pld)
+            assert cf.annual_prepay_rate == pytest.approx(expected, abs=1e-6), \
                 f"Month {cf.month} (age {age}): past lockout, should include CPR"
 
     def test_seasoning_equals_lockout(self):
@@ -214,7 +227,8 @@ class TestCPJSeasoningLockout:
         cf1 = next(cf for cf in result if cf.month == 1)
         age = 24 + 1
         pld = get_pld_rate(age, DEFAULT_PLD_CURVE)
-        assert cf1.annual_prepay_rate == pytest.approx(pld + 0.15, abs=1e-6), \
+        expected = self._expected_hazard_rate(pld)
+        assert cf1.annual_prepay_rate == pytest.approx(expected, abs=1e-6), \
             "Month 1 (age 25) should include CPR when seasoning equals lockout"
 
 
@@ -537,64 +551,67 @@ class TestScheduledPrincipalAccuracy:
     causing sched_prn to grow larger than contractual reg_prn over time.
     """
 
-    def test_cpj_sched_prn_vs_contractual(self):
-        """Compare CPJ overlay reg_prn with contractual reg_prn."""
+    def test_cpj_sched_prn_factor_consistent(self):
+        """CPJ overlay reg_prn / beg_bal should match contractual factor."""
         loan = make_loan(seasoning=0, io_period=0, balloon=120)
         contractual = generate_contractual_cashflows(loan, SETTLE)
         cpj = make_cpj(lockout_months=0, cpj_speed=15.0)
         result = apply_cpj_overlay(contractual, loan, cpj)
 
-        # Build month -> contractual reg_prn lookup
-        contractual_prn = {cf.month: cf.reg_prn for cf in contractual}
+        # Build month -> contractual schedule factor
+        contractual_factors = {}
+        for cf in contractual:
+            if cf.month > 0 and cf.beg_bal > 0.01:
+                contractual_factors[cf.month] = cf.reg_prn / cf.beg_bal
 
         divergences = []
         for cf in result:
-            if cf.month == 0:
+            if cf.month == 0 or cf.beg_bal < 0.01:
                 continue
-            if cf.month in contractual_prn:
-                contract_prn = contractual_prn[cf.month]
-                overlay_prn = cf.reg_prn
-                if contract_prn > 0.01:
-                    ratio = overlay_prn / contract_prn
-                    if abs(ratio - 1.0) > 0.05:  # more than 5% off
-                        divergences.append((cf.month, contract_prn, overlay_prn, ratio))
+            if cf.month in contractual_factors:
+                expected_factor = contractual_factors[cf.month]
+                actual_factor = cf.reg_prn / cf.beg_bal
+                if expected_factor > 1e-8:
+                    ratio = actual_factor / expected_factor
+                    if abs(ratio - 1.0) > 0.01:  # factor should match within 1%
+                        divergences.append((cf.month, expected_factor, actual_factor, ratio))
 
-        # Document divergence: the overlay's sched_prn should ideally track
-        # the contractual reg_prn (capped to current_bal).
-        # If this test fails, Bug 1 from the plan is confirmed.
         if divergences:
-            month, c_prn, o_prn, ratio = divergences[-1]
+            month, c_fac, o_fac, ratio = divergences[-1]
             pytest.fail(
-                f"Scheduled principal diverges from contractual: "
-                f"at month {month}, contractual={c_prn:.2f}, overlay={o_prn:.2f} "
+                f"Sched principal factor diverges: "
+                f"at month {month}, contractual_factor={c_fac:.6f}, overlay_factor={o_fac:.6f} "
                 f"(ratio={ratio:.3f}). Total divergent months: {len(divergences)}"
             )
 
-    def test_cpr_sched_prn_vs_contractual(self):
-        """Compare CPR overlay reg_prn with contractual reg_prn."""
+    def test_cpr_sched_prn_factor_consistent(self):
+        """CPR overlay reg_prn / beg_bal should match contractual factor."""
         loan = make_loan(seasoning=0, io_period=0, balloon=120)
         contractual = generate_contractual_cashflows(loan, SETTLE)
         result = apply_cpr_overlay(contractual, loan, 15.0)
 
-        contractual_prn = {cf.month: cf.reg_prn for cf in contractual}
+        contractual_factors = {}
+        for cf in contractual:
+            if cf.month > 0 and cf.beg_bal > 0.01:
+                contractual_factors[cf.month] = cf.reg_prn / cf.beg_bal
 
         divergences = []
         for cf in result:
-            if cf.month == 0:
+            if cf.month == 0 or cf.beg_bal < 0.01:
                 continue
-            if cf.month in contractual_prn:
-                contract_prn = contractual_prn[cf.month]
-                overlay_prn = cf.reg_prn
-                if contract_prn > 0.01:
-                    ratio = overlay_prn / contract_prn
-                    if abs(ratio - 1.0) > 0.05:
-                        divergences.append((cf.month, contract_prn, overlay_prn, ratio))
+            if cf.month in contractual_factors:
+                expected_factor = contractual_factors[cf.month]
+                actual_factor = cf.reg_prn / cf.beg_bal
+                if expected_factor > 1e-8:
+                    ratio = actual_factor / expected_factor
+                    if abs(ratio - 1.0) > 0.01:
+                        divergences.append((cf.month, expected_factor, actual_factor, ratio))
 
         if divergences:
-            month, c_prn, o_prn, ratio = divergences[-1]
+            month, c_fac, o_fac, ratio = divergences[-1]
             pytest.fail(
-                f"CPR sched principal diverges: "
-                f"at month {month}, contractual={c_prn:.2f}, overlay={o_prn:.2f} "
+                f"CPR sched principal factor diverges: "
+                f"at month {month}, contractual_factor={c_fac:.6f}, overlay_factor={o_fac:.6f} "
                 f"(ratio={ratio:.3f}). Total divergent months: {len(divergences)}"
             )
 
@@ -740,7 +757,12 @@ class TestPrepayDispatch:
         cf1 = next(cf for cf in result if cf.month == 1)
         age = 36 + 1
         pld = get_pld_rate(age, DEFAULT_PLD_CURVE)
-        assert cf1.annual_prepay_rate == pytest.approx(pld + 0.15, abs=1e-6)
+        # Hazard-style rate
+        smm_pld = 1.0 - (1.0 - pld) ** (1.0 / 12.0)
+        smm_cpr = 1.0 - (1.0 - 0.15) ** (1.0 / 12.0)
+        expected_smm = 1.0 - (1.0 - smm_pld) * (1.0 - smm_cpr)
+        expected_rate = 1.0 - (1.0 - expected_smm) ** 12.0
+        assert cf1.annual_prepay_rate == pytest.approx(expected_rate, abs=1e-6)
 
     def test_cpr_dispatch(self):
         """CPR type dispatches correctly."""
