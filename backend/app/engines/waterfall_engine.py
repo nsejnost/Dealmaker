@@ -4,15 +4,35 @@ Waterfall engine: SEQ/PT/IO bond structure and cashflow allocation.
 Supports:
 - SEQ (sequential principal)
 - PT (pass-through/pro-rata)
-- IO (interest-only)
+- IO (interest-only / residual excess interest)
 - FIX and WAC coupon types
 
 Waterfall order:
-1. Pay fees
-2. Pay bond interest by priority rank (SEQ/PT)
-3. IO gets remaining interest
-4. PT group gets pro-rata share of principal by balance
+1. Pay fees (beginning-of-period collateral balance * annual rate / 12)
+2. Pay bond interest by priority rank (SEQ/PT classes)
+3. IO classes receive remaining interest pro-rata by notional
+4. PT group gets pro-rata share of principal (PT_bal / total_prin_bal)
 5. SEQ gets remaining principal sequentially by rank
+
+Known limitations / deferred items:
+- IO classes act as residual excess interest recipients, not proper IO strips
+  with notional schedules and coupon formulas. This is intentional for the
+  current simplified engine.
+- PT principal allocation uses a hybrid rule: PT classes get their balance
+  share of total principal-bearing bonds, then SEQ gets the remainder. This
+  is one valid approach but not generic pass-through behavior. Configurable
+  group allocation rules are deferred.
+- WAC coupon uses full pool net WAC with no cap/floor/strip logic and no
+  collateral subset mapping. Adequate for single-pool deals only.
+- Interest shortfalls are silently lost. Unpaid interest does not accrue or
+  carry forward. Shortfall tracking deferred (needs product design).
+- Accrued interest is hardcoded to 0 in analytics. Dirty/clean price
+  distinction is deferred.
+- No inception validation of bond notionals vs collateral balance.
+- Balloon principal is classified as scheduled (contractual maturity),
+  grouped with reg_prn in collat_sched. This is correct by definition.
+- Yield solver uses Newton-Raphson; a bracketed solver would be more robust
+  for IO, premium/discount, and short residual edge cases.
 """
 
 from __future__ import annotations
@@ -149,13 +169,19 @@ def run_waterfall(
                 coupon_rate=coupon_rate,
             ))
 
-        # IO classes get remaining interest; track notional balance
+        # IO classes get remaining interest split pro-rata by notional
+        io_total_notional = sum(cls.original_balance for cls in io_classes)
         for cls in io_classes:
+            if io_total_notional > 0:
+                share = cls.original_balance / io_total_notional
+            else:
+                share = 1.0 / len(io_classes) if io_classes else 0.0
+            io_int = interest_rem * share
             result[cls.class_id].append(BondCashflowRow(
                 month=month,
                 beg_bal=0.0,
-                interest_due=interest_rem,
-                interest_paid=interest_rem,
+                interest_due=io_int,
+                interest_paid=io_int,
                 principal_paid=0.0,
                 end_bal=0.0,
                 coupon_rate=0.0,
@@ -238,15 +264,23 @@ def run_waterfall(
             all_classes = seq_classes + pt_classes + io_classes
             has_overrides = any(c.penalty_pct is not None for c in all_classes)
             if has_overrides:
+                raw_total = sum((c.penalty_pct or 0) for c in all_classes)
                 for cls in all_classes:
-                    pct = (cls.penalty_pct or 0) / 100.0
+                    raw_pct = (cls.penalty_pct or 0)
+                    # Normalize to ensure cash conservation
+                    pct = (raw_pct / raw_total) if raw_total > 0 else 0.0
                     entry = result[cls.class_id][-1]
                     entry.penalty_income = penalty * pct
             elif io_classes:
-                # All penalty income goes to IO class
+                # Penalty income split pro-rata by IO notional
+                io_total_notional = sum(c.original_balance for c in io_classes)
                 for cls in io_classes:
+                    if io_total_notional > 0:
+                        share = cls.original_balance / io_total_notional
+                    else:
+                        share = 1.0 / len(io_classes)
                     entry = result[cls.class_id][-1]
-                    entry.penalty_income = penalty
+                    entry.penalty_income = penalty * share
             else:
                 # Distribute pro-rata to all bond classes as excess cashflow
                 total_bal = sum(bond_bals[c.class_id] for c in seq_classes + pt_classes)
@@ -267,7 +301,12 @@ def run_waterfall(
                 if i < len(per_loan_by_month) and month in per_loan_by_month[i]:
                     loan_balances[i] = per_loan_by_month[i][month].end_bal
         elif loans:
-            loan_balances = [cf.end_bal]
+            # Proportional fallback: maintain relative balance weights
+            total_prev = sum(loan_balances)
+            if total_prev > 0:
+                loan_balances = [lb / total_prev * cf.end_bal for lb in loan_balances]
+            else:
+                loan_balances = [cf.end_bal / len(loans)] * len(loans)
 
     return result
 
@@ -298,7 +337,7 @@ def _bond_pv(
             yf = (cf_match.cf_date_serial - settle_serial) / 365.25
         else:
             yf = bcf.month / 12.0
-        total_cf = bcf.interest_paid + bcf.principal_paid
+        total_cf = bcf.interest_paid + bcf.principal_paid + bcf.penalty_income
         if yf > 0:
             base = 1.0 + y / 2.0
             if base <= 0:
@@ -378,13 +417,22 @@ def compute_bond_analytics(
     # WAL
     total_prn = 0.0
     weighted_prn = 0.0
-    prev_collat_bal = original_balance if is_io else 0.0
+    if is_io:
+        # IO WAL: track collateral balance decline, scaled by IO notional ratio
+        collat_orig = collateral_cfs[0].beg_bal if collateral_cfs else 0.0
+        prev_collat_bal = collat_orig
+        # If IO has a notional, scale; if notional is 0 (residual IO), use raw decline
+        io_scale = (original_balance / collat_orig) if (collat_orig > 0 and original_balance > 0) else 1.0
+    else:
+        prev_collat_bal = 0.0
+        io_scale = 0.0
     for bcf in bond_cfs:
         if bcf.month == 0:
             continue
         cf_match = collat_idx.get(bcf.month)
         if is_io:
-            prn = max(0.0, prev_collat_bal - cf_match.end_bal) if cf_match else 0.0
+            collat_decline = max(0.0, prev_collat_bal - cf_match.end_bal) if cf_match else 0.0
+            prn = collat_decline * io_scale
             if cf_match:
                 prev_collat_bal = cf_match.end_bal
         else:
