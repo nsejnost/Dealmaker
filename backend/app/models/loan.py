@@ -191,6 +191,7 @@ class DealResult(BaseModel):
     collateral_cashflows: list[CashflowRow] = []
     collateral_analytics: Optional[AnalyticsOutput] = None
     per_loan_analytics: list[Optional[AnalyticsOutput]] = []
+    per_loan_current_faces: list[float] = []
     loan_pricing_cashflows: list[CashflowRow] = []
     loan_pricing_analytics: Optional[AnalyticsOutput] = None
     per_loan_pricing_analytics: list[Optional[AnalyticsOutput]] = []
