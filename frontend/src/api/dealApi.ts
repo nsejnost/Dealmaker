@@ -63,4 +63,10 @@ export const dealApi = {
     fetchJson<any>(`${BASE}/${id}/scenarios`, { method: 'POST' }),
 
   exportCashflows: (id: string) => fetchJson<any>(`${BASE}/${id}/export/cashflows`),
+
+  computeCurrentFace: (deal: Deal) =>
+    fetchJson<{ original_face: number; current_face: number; factor: number }[]>(`${BASE}/current-face`, {
+      method: 'POST',
+      body: JSON.stringify(deal),
+    }),
 };

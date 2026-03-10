@@ -164,6 +164,29 @@ def run_deal_inline(deal: Deal) -> DealResult:
         )
 
 
+@router.post("/current-face")
+def compute_current_face(deal: Deal) -> list[dict]:
+    """Compute current face (remaining balance at settle) for each loan."""
+    from app.engines.cashflow_engine import generate_contractual_cashflows, _date_to_serial
+    try:
+        loans = deal.get_loans()
+        results = []
+        for loan in loans:
+            settle = loan.settle_date or deal.pricing.settle_date
+            cfs = generate_contractual_cashflows(loan, settle)
+            current_face = cfs[0].beg_bal if cfs else loan.original_face
+            results.append({
+                "original_face": loan.original_face,
+                "current_face": current_face,
+                "factor": current_face / loan.original_face if loan.original_face > 0 else 1.0,
+            })
+        return results
+    except Exception as exc:
+        tb = traceback.format_exc()
+        logger.error("compute_current_face failed: %s\n%s", exc, tb)
+        raise HTTPException(status_code=500, detail=f"Current face computation failed: {exc}")
+
+
 @router.post("/{deal_id}/scenarios")
 def run_scenarios(
     deal_id: str,

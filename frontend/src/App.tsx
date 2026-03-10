@@ -3,6 +3,7 @@ import type { Deal, DealResult, BondClass, PLDCurveEntry, PrepaymentType, LoanIn
 import { dealApi } from './api/dealApi';
 import { CashflowChart } from './components/CashflowChart';
 import { BondCashflowChart } from './components/BondCashflowChart';
+import * as XLSX from 'xlsx';
 
 /* ── helpers ─────────────────────────────────────────────────── */
 
@@ -195,6 +196,8 @@ export default function App() {
   const [showDealCashflows, setShowDealCashflows] = useState(false);
   const [activeTab, setActiveTab] = useState<'deal' | 'curve'>('deal');
   const [pasteText, setPasteText] = useState('');
+  const [currentFaces, setCurrentFaces] = useState<{ original_face: number; current_face: number; factor: number }[]>([]);
+  const [loadingFaces, setLoadingFaces] = useState(false);
 
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -325,6 +328,19 @@ export default function App() {
     }
   }, [deal]);
 
+  const computeCurrentFace = useCallback(async () => {
+    setLoadingFaces(true);
+    try {
+      const dealToSend = { ...deal, loan: deal.loans[0] || deal.loan };
+      const faces = await dealApi.computeCurrentFace(dealToSend);
+      setCurrentFaces(faces);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoadingFaces(false);
+    }
+  }, [deal]);
+
   const saveDeal = useCallback(async () => {
     try {
       const saved = await dealApi.createDeal(deal);
@@ -388,6 +404,166 @@ export default function App() {
     a.href = url; a.download = filename; a.click();
     URL.revokeObjectURL(url);
   }, []);
+
+  const exportWorkbook = useCallback(() => {
+    const wb = XLSX.utils.book_new();
+
+    // Tab 1: Loan Collateral
+    const loanRows = deal.loans.map((l, i) => ({
+      'Dated Date': l.dated_date,
+      '1st Settle': l.first_settle,
+      'Delay': l.delay,
+      'Original Face': l.original_face,
+      'Current Face': currentFaces[i]?.current_face ?? '',
+      'Factor': currentFaces[i]?.factor ?? '',
+      'Net Coupon': l.coupon_net,
+      'WAC Gross': l.wac_gross,
+      'WAM': l.wam,
+      'Amort WAM': l.amort_wam,
+      'IO Period': l.io_period ?? '',
+      'Balloon': l.balloon ?? '',
+      'Seasoning': l.seasoning,
+      'Lockout': l.lockout_months ?? '',
+      'Pricing Type': l.pricing_type,
+      'Pricing Input': l.pricing_input,
+      'Settle Date': l.settle_date ?? '',
+      'Penalty Schedule': l.prepayment_penalty.join('-'),
+      'LP Amort': l.lp_amort_wam ?? '',
+      'LP Balloon': l.lp_balloon ?? '',
+      'LP IO': l.lp_io_period ?? '',
+      'LP WAM': l.lp_wam ?? '',
+      ...(result?.per_loan_analytics?.[i] ? {
+        'Price': result.per_loan_analytics[i]!.price,
+        'Yield': result.per_loan_analytics[i]!.yield_pct,
+        'J-Spread': result.per_loan_analytics[i]!.j_spread,
+        'WAL': result.per_loan_analytics[i]!.wal,
+        'Duration': result.per_loan_analytics[i]!.modified_duration,
+        'Convexity': result.per_loan_analytics[i]!.convexity,
+        'Risk': result.per_loan_analytics[i]!.risk_dpdy,
+        'Tsy Rate': result.per_loan_analytics[i]!.tsy_rate_at_wal,
+      } : {}),
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(loanRows), 'Loans');
+
+    // Tab 2: Bond Structure
+    const bondRows = deal.structure.classes.map(cls => {
+      const ba = result?.bond_analytics[cls.class_id];
+      return {
+        'Class ID': cls.class_id,
+        'Type': cls.class_type,
+        'Balance': cls.original_balance,
+        'Coupon Type': cls.coupon_type,
+        'Rate': cls.coupon_fix,
+        'Priority': cls.priority_rank,
+        'Pricing Type': cls.pricing_type,
+        'Pricing Input': cls.pricing_input,
+        'Penalty %': cls.penalty_pct ?? '',
+        ...(ba ? {
+          'Price': ba.price,
+          'Yield': ba.yield_pct,
+          'J-Spread': ba.j_spread,
+          'WAL': ba.wal,
+          'Duration': ba.modified_duration,
+          'Convexity': ba.convexity,
+          'Risk': ba.risk_dpdy,
+        } : {}),
+      };
+    });
+    if (bondRows.length > 0) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(bondRows), 'Bonds');
+
+    // Tab 3: Deal Settings
+    const settingsRows = [
+      { Setting: 'Deal Name', Value: deal.deal_name },
+      { Setting: 'Settle Date', Value: deal.pricing.settle_date },
+      { Setting: 'Curve Date', Value: deal.pricing.curve_date },
+      { Setting: 'Pricing Type', Value: deal.pricing.pricing_type },
+      { Setting: 'Pricing Input', Value: deal.pricing.pricing_input },
+      { Setting: 'Fee Rate', Value: deal.structure.fee_rate },
+      { Setting: 'Prepay Type', Value: deal.structure.prepay.prepay_type },
+      { Setting: 'Prepay Speed', Value: deal.structure.prepay.speed },
+      { Setting: 'Lockout Months', Value: deal.structure.prepay.lockout_months },
+      { Setting: 'PLD Multiplier', Value: deal.structure.prepay.pld_multiplier },
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(settingsRows), 'Settings');
+
+    // Tab 4: Treasury Curve
+    const tsyRows = deal.treasury_curve.points.map(p => ({ Term: p.term, Rate: p.rate }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tsyRows), 'Treasury Curve');
+
+    // Tab 5: PLD Curve
+    if (deal.structure.prepay.prepay_type === 'CPJ') {
+      const pldRows = deal.structure.prepay.pld_curve.map(e => ({
+        'Start Month': e.start_month,
+        'End Month': e.end_month,
+        'Annual Rate': e.annual_rate,
+      }));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(pldRows), 'PLD Curve');
+    }
+
+    // Tab 6: Collateral Cashflows
+    if (result && result.collateral_cashflows.length > 0) {
+      const cfRows = result.collateral_cashflows.map(cf => ({
+        Month: cf.month,
+        Date: serialToDate(cf.date_serial),
+        'CF Date': serialToDate(cf.cf_date_serial),
+        'Yr Frac': cf.year_frac,
+        'Beg Bal': cf.beg_bal,
+        'Pmt Agy': cf.pmt_to_agy,
+        'Int Inv': cf.int_to_inv,
+        'Int Agy': cf.int_to_agy,
+        'Sched Prn': cf.reg_prn + cf.balloon_pay,
+        'Prepaid': cf.unsched_prn_vol,
+        'Defaulted': cf.unsched_prn_inv,
+        'Total Prn': cf.net_prn,
+        'End Bal': cf.end_bal,
+        'Net Flow': cf.net_flow,
+      }));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(cfRows), 'Collateral CFs');
+    }
+
+    // Tab 7: Bond Collateral Cashflows (with prepay)
+    if (result && result.bond_collateral_cashflows.length > 0) {
+      const bcfRows = result.bond_collateral_cashflows.map(cf => ({
+        Month: cf.month,
+        Date: serialToDate(cf.date_serial),
+        'Beg Bal': cf.beg_bal,
+        'Int Inv': cf.int_to_inv,
+        'Sched Prn': cf.reg_prn + cf.balloon_pay,
+        'Prepaid Vol': cf.unsched_prn_vol,
+        'Prepaid Inv': cf.unsched_prn_inv,
+        'Total Prn': cf.net_prn,
+        'End Bal': cf.end_bal,
+        SMM: cf.smm,
+        'Annual Prepay Rate': cf.annual_prepay_rate,
+      }));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(bcfRows), 'Bond Collateral CFs');
+    }
+
+    // Tabs 8+: Per bond class cashflows
+    if (result) {
+      for (const cls of deal.structure.classes) {
+        const bcfs = result.bond_cashflows[cls.class_id];
+        if (!bcfs || bcfs.length === 0) continue;
+        const rows = bcfs.map(b => ({
+          Month: b.month,
+          'Beg Bal': b.beg_bal,
+          'Int Due': b.interest_due,
+          'Int Paid': b.interest_paid,
+          'Sched Prn': b.sched_prn,
+          'Prepaid Prn': b.prepaid_prn,
+          'Default Prn': b.default_prn,
+          'Total Prn': b.principal_paid,
+          'End Bal': b.end_bal,
+          'Coupon Rate': b.coupon_rate,
+          'Penalty Income': b.penalty_income,
+        }));
+        const sheetName = cls.class_id.substring(0, 31); // Excel 31 char limit
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), sheetName);
+      }
+    }
+
+    XLSX.writeFile(wb, `${deal.deal_name || 'deal'}_export.xlsx`);
+  }, [deal, result, currentFaces]);
 
   const updateLoan = (idx: number, field: string, value: any) => {
     setDeal(d => {
@@ -535,6 +711,7 @@ export default function App() {
           <button onClick={runDeal} disabled={loading} style={btnPrimary}>
             {loading ? 'Running...' : 'Run Deal'}
           </button>
+          <button onClick={exportWorkbook} style={btnSecondary}>Export Excel</button>
         </div>
       </header>
 
@@ -577,18 +754,22 @@ export default function App() {
 
           {/* ── COLLATERAL SECTION ── */}
           <Section title="Collateral">
-            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
               <button onClick={addLoan} style={btnSecondary}>+ Add Loan</button>
+              <button onClick={computeCurrentFace} disabled={loadingFaces} style={btnSecondary}>
+                {loadingFaces ? 'Computing...' : 'Current Face'}
+              </button>
               <span style={{ fontSize: 11, color: '#64748b', lineHeight: '28px' }}>
                 {deal.loans.length} loan{deal.loans.length > 1 ? 's' : ''} &bull; Total Face: {fmt(totalFace, 0)}
+                {currentFaces.length > 0 && <> &bull; Total Current: {fmt(currentFaces.reduce((s, f) => s + f.current_face, 0), 0)}</>}
               </span>
             </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table style={tableStyle}>
+            <div style={{ overflow: 'auto', maxHeight: 500 }}>
+              <table style={scrollTableStyle}>
                 <thead>
                   <tr>
                     <th style={thStyle}></th>
-                    <th style={thStyle} colSpan={12}>Loan Details</th>
+                    <th style={thStyle} colSpan={13}>Loan Details</th>
                     <th style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={3}>Pricing</th>
                     <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Penalty</th>
                     <th style={{...thStyle, borderLeft: '2px solid #475569'}} colSpan={4}>LP Override</th>
@@ -597,36 +778,37 @@ export default function App() {
                     )}
                   </tr>
                   <tr>
-                    <th style={thStyle}></th>
-                    <th style={thStyle}>Dated</th>
-                    <th style={thStyle}>1st Settle</th>
-                    <th style={thStyle}>Delay</th>
-                    <th style={thStyle}>Orig Face</th>
-                    <th style={thStyle}>Net Cpn</th>
-                    <th style={thStyle}>WAC</th>
-                    <th style={thStyle}>WAM</th>
-                    <th style={thStyle}>Amort</th>
-                    <th style={thStyle}>IO</th>
-                    <th style={thStyle}>Balloon</th>
-                    <th style={thStyle}>Season</th>
-                    <th style={thStyle}>Lock</th>
-                    <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Type</th>
-                    <th style={thStyle}>Input</th>
-                    <th style={thStyle}>Settle</th>
-                    <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Schedule</th>
-                    <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Amort</th>
-                    <th style={thStyle}>Blln</th>
-                    <th style={thStyle}>IO</th>
-                    <th style={thStyle}>WAM</th>
+                    <th style={thStyle2}></th>
+                    <th style={thStyle2}>Dated</th>
+                    <th style={thStyle2}>1st Settle</th>
+                    <th style={thStyle2}>Delay</th>
+                    <th style={thStyle2}>Orig Face</th>
+                    <th style={thStyle2}>Cur Face</th>
+                    <th style={thStyle2}>Net Cpn</th>
+                    <th style={thStyle2}>WAC</th>
+                    <th style={thStyle2}>WAM</th>
+                    <th style={thStyle2}>Amort</th>
+                    <th style={thStyle2}>IO</th>
+                    <th style={thStyle2}>Balloon</th>
+                    <th style={thStyle2}>Season</th>
+                    <th style={thStyle2}>Lock</th>
+                    <th style={{...thStyle2, borderLeft: '2px solid #475569'}}>Type</th>
+                    <th style={thStyle2}>Input</th>
+                    <th style={thStyle2}>Settle</th>
+                    <th style={{...thStyle2, borderLeft: '2px solid #475569'}}>Schedule</th>
+                    <th style={{...thStyle2, borderLeft: '2px solid #475569'}}>Amort</th>
+                    <th style={thStyle2}>Blln</th>
+                    <th style={thStyle2}>IO</th>
+                    <th style={thStyle2}>WAM</th>
                     {result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && <>
-                      <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Price</th>
-                      <th style={thStyle}>Yield</th>
-                      <th style={thStyle}>J-Sprd</th>
-                      <th style={thStyle}>WAL</th>
-                      <th style={thStyle}>Dur</th>
+                      <th style={{...thStyle2, borderLeft: '2px solid #475569'}}>Price</th>
+                      <th style={thStyle2}>Yield</th>
+                      <th style={thStyle2}>J-Sprd</th>
+                      <th style={thStyle2}>WAL</th>
+                      <th style={thStyle2}>Dur</th>
                       <th style={thStyle}>Cvx</th>
-                      <th style={thStyle}>Risk</th>
-                      <th style={thStyle}>Tsy</th>
+                      <th style={thStyle2}>Risk</th>
+                      <th style={thStyle2}>Tsy</th>
                     </>}
                   </tr>
                 </thead>
@@ -646,6 +828,7 @@ export default function App() {
                         <td style={tdStyle}><input type="date" value={loan.first_settle} onChange={e => updateLoan(i, 'first_settle', e.target.value)} style={{...inputStyle, width: 120}} /></td>
                         <td style={tdStyle}><input type="number" value={loan.delay} onChange={e => updateLoan(i, 'delay', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
                         <td style={tdStyle}><BlurInput type="text" value={loan.original_face} format={fmtComma} parse={s => updateLoan(i, 'original_face', parseComma(s))} style={{...inputStyle, width: 100}} /></td>
+                        <td style={{...tdStyleR, fontSize: 11, color: currentFaces[i] ? '#e2e8f0' : '#475569'}}>{currentFaces[i] ? fmt(currentFaces[i].current_face, 2) : '-'}</td>
                         <td style={tdStyle}><BlurInput type="text" value={loan.coupon_net} format={v => (v * 100).toFixed(4)} parse={s => updateLoan(i, 'coupon_net', parseFloat(s) / 100)} style={{...inputStyle, width: 65}} /></td>
                         <td style={tdStyle}><BlurInput type="text" value={loan.wac_gross} format={v => (v * 100).toFixed(4)} parse={s => updateLoan(i, 'wac_gross', parseFloat(s) / 100)} style={{...inputStyle, width: 65}} /></td>
                         <td style={tdStyle}><input type="number" value={loan.wam} onChange={e => updateLoan(i, 'wam', parseInt(e.target.value))} style={{...inputStyle, width: 45}} /></td>
@@ -688,24 +871,6 @@ export default function App() {
                           </>;
                         })()}
                       </tr>
-                      {/* Contractual analytics sub-row - shown when LP overrides differ from contractual */}
-                      {lp && contractual && result && result.per_loan_analytics && result.per_loan_analytics.length > 0 && (
-                        <tr style={{ background: '#1a1a2e' }}>
-                          <td style={tdStyle}></td>
-                          <td colSpan={12} style={{...tdStyle, color: '#64748b', fontSize: 10, fontStyle: 'italic'}}>Contractual</td>
-                          <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={3}></td>
-                          <td style={{...tdStyle, borderLeft: '2px solid #475569'}}></td>
-                          <td style={{...tdStyle, borderLeft: '2px solid #475569'}} colSpan={4}></td>
-                          <td style={{...tdStyleR, borderLeft: '2px solid #475569', color: '#64748b'}}>{contractual.price.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#64748b'}}>{contractual.yield_pct.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#64748b'}}>{contractual.j_spread.toFixed(1)}</td>
-                          <td style={{...tdStyleR, color: '#64748b'}}>{contractual.wal.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#64748b'}}>{contractual.modified_duration.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#64748b'}}>{contractual.convexity.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#64748b'}}>{contractual.risk_dpdy.toFixed(4)}</td>
-                          <td style={{...tdStyleR, color: '#64748b'}}>{contractual.tsy_rate_at_wal.toFixed(4)}</td>
-                        </tr>
-                      )}
                       </React.Fragment>
                     );
                   })}
@@ -715,6 +880,7 @@ export default function App() {
                       <td style={tdStyle}></td>
                       <td colSpan={3} style={{...tdStyle, color: '#38bdf8', fontSize: 11}}>TOTAL / WEIGHTED</td>
                       <td style={tdStyleR}>{fmt(totalFace, 0)}</td>
+                      <td style={{...tdStyleR, color: currentFaces.length > 0 ? '#38bdf8' : '#475569'}}>{currentFaces.length > 0 ? fmt(currentFaces.reduce((s, f) => s + f.current_face, 0), 0) : '-'}</td>
                       <td style={tdStyleR}>{totalFace > 0 ? (deal.loans.reduce((s, l) => s + l.original_face * l.coupon_net, 0) / totalFace * 100).toFixed(4) : '-'}</td>
                       <td style={tdStyleR}>{totalFace > 0 ? (deal.loans.reduce((s, l) => s + l.original_face * l.wac_gross, 0) / totalFace * 100).toFixed(4) : '-'}</td>
                       <td colSpan={6} style={tdStyle}></td>
@@ -810,8 +976,8 @@ export default function App() {
               </span>
             </div>
             {deal.structure.classes.length > 0 && (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={tableStyle}>
+              <div style={{ overflow: 'auto', maxHeight: 400 }}>
+                <table style={scrollTableStyle}>
                   <thead>
                     <tr>
                       <th style={thStyle}></th>
@@ -946,7 +1112,7 @@ export default function App() {
           {result && (
             <Section title="Collateral Cashflow Table" collapsible collapsed={!showCashflows} onToggle={() => setShowCashflows(!showCashflows)}>
               <div style={{ maxHeight: 400, overflow: 'auto' }}>
-                <table style={tableStyle}>
+                <table style={scrollTableStyle}>
                   <thead>
                     <tr>
                       <th style={thStyle}>Mo</th><th style={thStyle}>Date</th><th style={thStyle}>CF Date</th>
@@ -1160,7 +1326,7 @@ function DealCashflowTable({ result, classes, exportCSV }: {
   return (
     <>
       <div style={{ maxHeight: 400, overflow: 'auto' }}>
-        <table style={tableStyle}>
+        <table style={scrollTableStyle}>
           <thead>
             <tr>
               <th style={thStyle} rowSpan={2}>Mo</th>
@@ -1171,10 +1337,10 @@ function DealCashflowTable({ result, classes, exportCSV }: {
               ))}
             </tr>
             <tr>
-              <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Beg Bal</th><th style={thStyle}>Interest</th><th style={thStyle}>Sched</th><th style={thStyle}>Prepaid</th><th style={thStyle}>Default</th><th style={thStyle}>Total Prn</th><th style={thStyle}>End Bal</th>
+              <th style={{...thStyle2, borderLeft: '2px solid #475569'}}>Beg Bal</th><th style={thStyle2}>Interest</th><th style={thStyle2}>Sched</th><th style={thStyle2}>Prepaid</th><th style={thStyle2}>Default</th><th style={thStyle2}>Total Prn</th><th style={thStyle2}>End Bal</th>
               {bondIds.map(bid => (
                 <React.Fragment key={bid}>
-                  <th style={{...thStyle, borderLeft: '2px solid #475569'}}>Beg Bal</th><th style={thStyle}>Int Paid</th><th style={thStyle}>Sched</th><th style={thStyle}>Prepaid</th><th style={thStyle}>Default</th><th style={thStyle}>Total Prn</th><th style={thStyle}>End Bal</th><th style={thStyle}>Penalty</th>
+                  <th style={{...thStyle2, borderLeft: '2px solid #475569'}}>Beg Bal</th><th style={thStyle2}>Int Paid</th><th style={thStyle2}>Sched</th><th style={thStyle2}>Prepaid</th><th style={thStyle2}>Default</th><th style={thStyle2}>Total Prn</th><th style={thStyle2}>End Bal</th><th style={thStyle2}>Penalty</th>
                 </React.Fragment>
               ))}
             </tr>
@@ -1229,8 +1395,15 @@ const panelHeader: React.CSSProperties = {
 const tableStyle: React.CSSProperties = {
   width: '100%', borderCollapse: 'collapse', fontSize: 11,
 };
+const scrollTableStyle: React.CSSProperties = {
+  minWidth: 'max-content', borderCollapse: 'collapse', fontSize: 11,
+};
 const thStyle: React.CSSProperties = {
   textAlign: 'left', padding: '4px 6px', borderBottom: '1px solid #475569', color: '#94a3b8', fontWeight: 500, whiteSpace: 'nowrap',
+  position: 'sticky', top: 0, background: '#1e293b', zIndex: 2,
+};
+const thStyle2: React.CSSProperties = {
+  ...thStyle, top: 24,
 };
 const tdStyle: React.CSSProperties = {
   padding: '3px 6px', borderBottom: '1px solid #1e293b', whiteSpace: 'nowrap',
