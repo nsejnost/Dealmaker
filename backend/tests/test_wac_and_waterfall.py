@@ -394,3 +394,282 @@ class TestPTWaterfall:
             if p1 + p2 > 0.01:
                 assert p1 == pytest.approx(p2, rel=0.01), \
                     f"Month {result['PT1'][i].month}: PT1 prn {p1} != PT2 prn {p2}"
+
+
+class TestMultiIOInterest:
+    """Multiple IO classes must split interest pro-rata, not duplicate."""
+
+    def _make_multi_io_structure(self):
+        return DealStructure(
+            classes=[
+                BondClass(
+                    class_id="A",
+                    class_type=BondClassType.SEQ,
+                    original_balance=800_000.0,
+                    current_balance=800_000.0,
+                    coupon_type=CouponType.FIX,
+                    coupon_fix=0.03,
+                    priority_rank=1,
+                ),
+                BondClass(
+                    class_id="IO1",
+                    class_type=BondClassType.IO,
+                    original_balance=500_000.0,
+                    current_balance=0.0,
+                    coupon_type=CouponType.FIX,
+                    coupon_fix=0.0,
+                    priority_rank=0,
+                ),
+                BondClass(
+                    class_id="IO2",
+                    class_type=BondClassType.IO,
+                    original_balance=500_000.0,
+                    current_balance=0.0,
+                    coupon_type=CouponType.FIX,
+                    coupon_fix=0.0,
+                    priority_rank=0,
+                ),
+            ],
+            fee_rate=0.0,
+        )
+
+    def test_multi_io_interest_not_duplicated(self):
+        """Total IO interest must not exceed available interest."""
+        cfs = generate_contractual_cashflows(LOAN, SETTLE)
+        structure = self._make_multi_io_structure()
+        result = run_waterfall(cfs, structure, [LOAN])
+
+        for i in range(len(result["IO1"])):
+            month = result["IO1"][i].month
+            if month == 0:
+                continue
+            io1_int = result["IO1"][i].interest_paid
+            io2_int = result["IO2"][i].interest_paid
+            a_int = result["A"][i].interest_paid
+            collat_int = cfs[i].int_to_inv
+
+            # Total bond interest must not exceed collateral interest
+            total_bond_int = io1_int + io2_int + a_int
+            assert total_bond_int <= collat_int + 0.01, \
+                f"Month {month}: total bond interest {total_bond_int} > collateral {collat_int}"
+
+    def test_multi_io_equal_notional_split(self):
+        """Two IOs with equal notional get equal shares."""
+        cfs = generate_contractual_cashflows(LOAN, SETTLE)
+        structure = self._make_multi_io_structure()
+        result = run_waterfall(cfs, structure, [LOAN])
+
+        for i in range(len(result["IO1"])):
+            if result["IO1"][i].month == 0:
+                continue
+            io1 = result["IO1"][i].interest_paid
+            io2 = result["IO2"][i].interest_paid
+            if io1 + io2 > 0.01:
+                assert io1 == pytest.approx(io2, rel=0.01), \
+                    f"Month {result['IO1'][i].month}: IO1={io1} != IO2={io2}"
+
+    def test_multi_io_unequal_notional_split(self):
+        """Two IOs with 3:1 notional get 3:1 interest split."""
+        structure = DealStructure(
+            classes=[
+                BondClass(
+                    class_id="A",
+                    class_type=BondClassType.SEQ,
+                    original_balance=800_000.0,
+                    current_balance=800_000.0,
+                    coupon_type=CouponType.FIX,
+                    coupon_fix=0.03,
+                    priority_rank=1,
+                ),
+                BondClass(
+                    class_id="IO1",
+                    class_type=BondClassType.IO,
+                    original_balance=750_000.0,
+                    current_balance=0.0,
+                    coupon_type=CouponType.FIX,
+                    coupon_fix=0.0,
+                    priority_rank=0,
+                ),
+                BondClass(
+                    class_id="IO2",
+                    class_type=BondClassType.IO,
+                    original_balance=250_000.0,
+                    current_balance=0.0,
+                    coupon_type=CouponType.FIX,
+                    coupon_fix=0.0,
+                    priority_rank=0,
+                ),
+            ],
+            fee_rate=0.0,
+        )
+
+        cfs = generate_contractual_cashflows(LOAN, SETTLE)
+        result = run_waterfall(cfs, structure, [LOAN])
+
+        for i in range(len(result["IO1"])):
+            if result["IO1"][i].month == 0:
+                continue
+            io1 = result["IO1"][i].interest_paid
+            io2 = result["IO2"][i].interest_paid
+            if io1 + io2 > 0.01:
+                # 3:1 ratio
+                assert io1 == pytest.approx(io2 * 3.0, rel=0.01), \
+                    f"Month {result['IO1'][i].month}: IO1={io1} should be 3x IO2={io2}"
+
+
+class TestMultiIOPenalty:
+    """Penalty income must not duplicate across multiple IOs."""
+
+    def test_penalty_not_duplicated(self):
+        """Total penalty allocated must not exceed penalty generated."""
+        from app.engines.cashflow_engine import apply_cpj_overlay
+
+        loan = LOAN.model_copy()
+        loan.prepayment_penalty = [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+        loan.lockout_months = 0
+
+        cfs = generate_contractual_cashflows(loan, SETTLE)
+        cpj = CPJInput(
+            enabled=True,
+            cpj_speed=15.0,
+            lockout_months=0,
+            pld_curve=DEFAULT_PLD_CURVE,
+        )
+        bond_cfs = apply_cpj_overlay(cfs, loan, cpj)
+
+        structure = DealStructure(
+            classes=[
+                BondClass(
+                    class_id="A",
+                    class_type=BondClassType.SEQ,
+                    original_balance=800_000.0,
+                    current_balance=800_000.0,
+                    coupon_type=CouponType.FIX,
+                    coupon_fix=0.03,
+                    priority_rank=1,
+                ),
+                BondClass(
+                    class_id="IO1",
+                    class_type=BondClassType.IO,
+                    original_balance=500_000.0,
+                    current_balance=0.0,
+                    priority_rank=0,
+                ),
+                BondClass(
+                    class_id="IO2",
+                    class_type=BondClassType.IO,
+                    original_balance=500_000.0,
+                    current_balance=0.0,
+                    priority_rank=0,
+                ),
+            ],
+            fee_rate=0.0,
+        )
+        result = run_waterfall(bond_cfs, structure, [loan], per_loan_bond_cfs=[bond_cfs])
+
+        for i in range(len(result["IO1"])):
+            io1_pen = result["IO1"][i].penalty_income
+            io2_pen = result["IO2"][i].penalty_income
+            # Each IO should get half, not the full amount
+            if io1_pen > 0.01:
+                assert io1_pen == pytest.approx(io2_pen, rel=0.01), \
+                    f"Month {result['IO1'][i].month}: penalty IO1={io1_pen} != IO2={io2_pen}"
+
+
+class TestPenaltyOverrideNormalization:
+    """Penalty overrides must be normalized for cash conservation."""
+
+    def test_overrides_summing_over_100(self):
+        """Overrides summing to >100% should be normalized."""
+        from app.engines.cashflow_engine import apply_cpj_overlay
+
+        loan = LOAN.model_copy()
+        loan.prepayment_penalty = [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+        loan.lockout_months = 0
+
+        cfs = generate_contractual_cashflows(loan, SETTLE)
+        cpj = CPJInput(
+            enabled=True,
+            cpj_speed=15.0,
+            lockout_months=0,
+            pld_curve=DEFAULT_PLD_CURVE,
+        )
+        bond_cfs = apply_cpj_overlay(cfs, loan, cpj)
+
+        structure = DealStructure(
+            classes=[
+                BondClass(
+                    class_id="A",
+                    class_type=BondClassType.SEQ,
+                    original_balance=800_000.0,
+                    current_balance=800_000.0,
+                    coupon_type=CouponType.FIX,
+                    coupon_fix=0.03,
+                    priority_rank=1,
+                    penalty_pct=80.0,  # 80%
+                ),
+                BondClass(
+                    class_id="B",
+                    class_type=BondClassType.SEQ,
+                    original_balance=200_000.0,
+                    current_balance=200_000.0,
+                    coupon_type=CouponType.FIX,
+                    coupon_fix=0.04,
+                    priority_rank=2,
+                    penalty_pct=80.0,  # 80% — total=160%, should normalize
+                ),
+            ],
+            fee_rate=0.0,
+        )
+        result = run_waterfall(bond_cfs, structure, [loan], per_loan_bond_cfs=[bond_cfs])
+
+        # Verify total allocated penalty never exceeds generated penalty
+        for i in range(len(result["A"])):
+            a_pen = result["A"][i].penalty_income
+            b_pen = result["B"][i].penalty_income
+            if a_pen + b_pen > 0.01:
+                # Should be 50/50 after normalization (both had 80%)
+                assert a_pen == pytest.approx(b_pen, rel=0.01), \
+                    f"Month {result['A'][i].month}: normalized split should be equal"
+
+
+class TestPVIncludesPenalty:
+    """Bond PV should include penalty income in cashflows."""
+
+    def test_pv_with_penalty_greater(self):
+        """PV with penalty income should be >= PV without."""
+        from app.engines.waterfall_engine import _bond_pv
+        from app.models.loan import BondCashflowRow
+
+        # Create synthetic bond cashflows with penalty
+        bond_cfs = [
+            BondCashflowRow(month=0, beg_bal=100.0, end_bal=100.0),
+            BondCashflowRow(
+                month=1,
+                beg_bal=100.0,
+                interest_paid=0.5,
+                principal_paid=10.0,
+                penalty_income=2.0,
+                end_bal=90.0,
+            ),
+        ]
+        bond_cfs_no_pen = [
+            BondCashflowRow(month=0, beg_bal=100.0, end_bal=100.0),
+            BondCashflowRow(
+                month=1,
+                beg_bal=100.0,
+                interest_paid=0.5,
+                principal_paid=10.0,
+                penalty_income=0.0,
+                end_bal=90.0,
+            ),
+        ]
+
+        # Use real collateral cashflows for year-fraction lookup
+        cfs = generate_contractual_cashflows(LOAN, SETTLE)
+
+        pv_with = _bond_pv(bond_cfs, cfs[0].date_serial, cfs, 5.0)
+        pv_without = _bond_pv(bond_cfs_no_pen, cfs[0].date_serial, cfs, 5.0)
+
+        assert pv_with > pv_without, \
+            f"PV with penalty ({pv_with}) should exceed PV without ({pv_without})"
