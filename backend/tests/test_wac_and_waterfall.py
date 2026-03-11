@@ -264,15 +264,17 @@ class TestIOClass:
                 f"Month {io_cfs[i].month}: IO {io_cfs[i].interest_paid} != {expected_io}"
 
     def test_io_no_principal(self):
-        """IO bonds should never receive actual principal in cashflows."""
+        """IO bonds should never receive actual principal but track notional balance."""
         cfs = generate_contractual_cashflows(LOAN, SETTLE)
         structure = make_io_structure()
         result = run_waterfall(cfs, structure, [LOAN])
 
         for bcf in result["IO"]:
             assert bcf.principal_paid == 0.0
-            assert bcf.beg_bal == 0.0
-            assert bcf.end_bal == 0.0
+        # IO notional should track collateral — starts at IO original_balance, declines to 0
+        io_cfs = result["IO"]
+        assert io_cfs[0].beg_bal > 0, "IO notional should start > 0"
+        assert io_cfs[-1].end_bal == 0.0, "IO notional should end at 0"
 
 
 class TestReconciliation:
