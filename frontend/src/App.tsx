@@ -322,6 +322,7 @@ export default function App() {
       }
       const res = await dealApi.runInline(dealToRun);
       setResult(res);
+      setCurrentFaces([]);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -335,12 +336,16 @@ export default function App() {
       const dealToSend = { ...deal, loan: deal.loans[0] || deal.loan };
       const faces = await dealApi.computeCurrentFace(dealToSend);
       setCurrentFaces(faces);
+      // Clear stale per_loan_current_faces so the fresh currentFaces take precedence
+      if (result) {
+        setResult(r => r ? { ...r, per_loan_current_faces: [] } : r);
+      }
     } catch (e: any) {
       setError(e.message);
     } finally {
       setLoadingFaces(false);
     }
-  }, [deal]);
+  }, [deal, result]);
 
   const saveDeal = useCallback(async () => {
     try {
@@ -665,7 +670,9 @@ export default function App() {
   const totalFace = deal.loans.reduce((s, l) => s + l.original_face, 0);
   const totalCurrentFace = result?.per_loan_current_faces?.length
     ? result.per_loan_current_faces.reduce((s, f) => s + f, 0)
-    : totalFace;
+    : currentFaces.length
+      ? currentFaces.reduce((s, f) => s + f.current_face, 0)
+      : totalFace;
   const dealArb = React.useMemo(() => {
     if (!result || !result.collateral_analytics) return null;
     const anyOvr = deal.loans.some(l => l.lp_amort_wam != null || l.lp_balloon != null || l.lp_io_period != null || l.lp_wam != null);
