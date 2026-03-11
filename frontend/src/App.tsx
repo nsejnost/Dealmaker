@@ -663,6 +663,9 @@ export default function App() {
 
   // Deal Arb computation
   const totalFace = deal.loans.reduce((s, l) => s + l.original_face, 0);
+  const totalCurrentFace = result?.per_loan_current_faces?.length
+    ? result.per_loan_current_faces.reduce((s, f) => s + f, 0)
+    : totalFace;
   const dealArb = React.useMemo(() => {
     if (!result || !result.collateral_analytics) return null;
     const anyOvr = deal.loans.some(l => l.lp_amort_wam != null || l.lp_balloon != null || l.lp_io_period != null || l.lp_wam != null);
@@ -1066,7 +1069,7 @@ export default function App() {
                           <td style={tdStyle}><span style={{ color: cls.class_type === 'SEQ' ? '#38bdf8' : cls.class_type === 'PT' ? '#a78bfa' : '#fbbf24', fontWeight: 600, fontSize: 11 }}>{cls.class_type}</span></td>
                           <td style={tdStyle}>
                             {!isIO && <BlurInput type="text" value={cls.original_balance} format={fmtComma} parse={s => updateClass(i, 'original_balance', parseComma(s))} style={{...inputStyle, width: 100}} />}
-                            {isIO && <span style={{ color: '#94a3b8', fontSize: 11 }}>{fmtComma(totalFace)}</span>}
+                            {isIO && <span style={{ color: '#94a3b8', fontSize: 11 }}>{fmtComma(totalCurrentFace)}</span>}
                           </td>
                           <td style={tdStyle}>
                             {!isIO && <select value={cls.coupon_type} onChange={e => updateClass(i, 'coupon_type', e.target.value)} style={{...inputStyle, width: 55}}><option value="FIX">FIX</option><option value="WAC">WAC</option></select>}
