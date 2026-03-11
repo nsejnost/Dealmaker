@@ -834,7 +834,8 @@ export default function App() {
                       <th style={thStyle2}>Risk</th>
                       <th style={thStyle2}>Tsy</th>
                       <th style={{...thStyle2, borderLeft: '2px solid #475569'}}>Accrued ($)</th>
-                      <th style={thStyle2}>Mkt Value</th>
+                      <th style={thStyle2}>Clean MV</th>
+                      <th style={thStyle2}>Dirty MV</th>
                     </>}
                   </tr>
                 </thead>
@@ -892,6 +893,7 @@ export default function App() {
                           const cf = result.per_loan_current_faces?.[i] ?? loan.original_face;
                           const accruedDollars = (a.accrued / 100) * cf;
                           const cleanMV = (a.price / 100) * cf;
+                          const dirtyMV = cleanMV + accruedDollars;
                           return <>
                             <td style={{...tdStyleR, borderLeft: '2px solid #475569'}}>{a.price.toFixed(4)}</td>
                             <td style={tdStyleR}>{a.yield_pct.toFixed(4)}</td>
@@ -903,6 +905,7 @@ export default function App() {
                             <td style={tdStyleR}>{a.tsy_rate_at_wal.toFixed(4)}</td>
                             <td style={{...tdStyleR, borderLeft: '2px solid #475569'}}>{fmt(accruedDollars)}</td>
                             <td style={tdStyleR}>{fmt(cleanMV)}</td>
+                            <td style={tdStyleR}>{fmt(dirtyMV)}</td>
                           </>;
                         })()}
                       </tr>
@@ -953,6 +956,7 @@ export default function App() {
                           <td style={{...tdStyleR, color: '#38bdf8'}}>{aggA?.tsy_rate_at_wal.toFixed(4) ?? '-'}</td>
                           <td style={{...tdStyleR, borderLeft: '2px solid #475569', color: '#38bdf8'}}>{fmt(totalAccrued)}</td>
                           <td style={{...tdStyleR, color: '#38bdf8'}}>{fmt(totalCleanMV)}</td>
+                          <td style={{...tdStyleR, color: '#38bdf8'}}>{fmt(totalCleanMV + totalAccrued)}</td>
                         </>;
                       })()}
                     </tr>
