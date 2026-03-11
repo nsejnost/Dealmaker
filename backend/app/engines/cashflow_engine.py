@@ -548,6 +548,8 @@ def aggregate_cashflows(all_cfs: list[list[CashflowRow]]) -> list[CashflowRow]:
                 agg.net_prn += row.net_prn
                 agg.net_flow += row.net_flow
                 agg.unsched_prn += row.unsched_prn
+                agg.unsched_prn_vol += row.unsched_prn_vol
+                agg.unsched_prn_inv += row.unsched_prn_inv
                 agg.total_prn += row.total_prn
 
         # Derive aggregate SMM from aggregate balances

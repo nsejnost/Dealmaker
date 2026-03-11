@@ -170,6 +170,7 @@ def run_waterfall(
             ))
 
         # IO classes get remaining interest split pro-rata by notional
+        collat_orig = collateral_cashflows[0].beg_bal if collateral_cashflows else 0.0
         io_total_notional = sum(cls.original_balance for cls in io_classes)
         for cls in io_classes:
             if io_total_notional > 0:
@@ -177,13 +178,21 @@ def run_waterfall(
             else:
                 share = 1.0 / len(io_classes) if io_classes else 0.0
             io_int = interest_rem * share
+            # IO notional tracks collateral balance proportionally
+            io_orig = cls.original_balance if cls.original_balance > 0 else collat_orig
+            if collat_orig > 0:
+                io_beg = io_orig * (cf.beg_bal / collat_orig)
+                io_end = io_orig * (cf.end_bal / collat_orig)
+            else:
+                io_beg = 0.0
+                io_end = 0.0
             result[cls.class_id].append(BondCashflowRow(
                 month=month,
-                beg_bal=0.0,
+                beg_bal=io_beg,
                 interest_due=io_int,
                 interest_paid=io_int,
                 principal_paid=0.0,
-                end_bal=0.0,
+                end_bal=io_end,
                 coupon_rate=0.0,
             ))
         interest_rem = 0.0
