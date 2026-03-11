@@ -104,7 +104,7 @@ def compute_price_from_yield(
     settle_serial: int,
     original_face: float,
 ) -> float:
-    """Compute price per 100 face from yield."""
+    """Compute dirty price per 100 face from yield (PV / face * 100)."""
     pv = compute_pv(cashflows, annual_yield, settle_serial)
     return (pv / original_face) * 100.0
 
@@ -286,12 +286,12 @@ def compute_full_analytics(
         yield_pct = tsy_at_wal + pricing_input / 100.0
         price = compute_price_from_yield(
             cashflows, yield_pct, settle_serial, original_face
-        )
+        ) - accrued_per_face  # convert dirty → clean
     else:
         yield_pct = pricing_input
         price = compute_price_from_yield(
             cashflows, yield_pct, settle_serial, original_face
-        )
+        ) - accrued_per_face  # convert dirty → clean
 
     mod_dur = compute_modified_duration(
         cashflows, yield_pct, settle_serial, original_face
